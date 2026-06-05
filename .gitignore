@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+src-tauri/target/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp files
+*.py
+icon_mapping.json
+focustree_ref.cpp
+
+# Icons (generated from game files, ~22MB)
+public/icons/
+public/focusview/
+
+# Data (generated)
+src/data/icon_data.json
