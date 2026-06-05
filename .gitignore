@@ -20,12 +20,6 @@ Thumbs.db
 icon_mapping.json
 focustree_ref.cpp
 
-# Icons (generated from game files, ~22MB)
-public/icons/
-public/focusview/
-
-# Data (generated)
-src/data/icon_data.json
 
 # Temp / task files
 *.md
