@@ -32,7 +32,8 @@ export function StatusBar() {
         )}
       </div>
 
-      <div style={{ display: "flex", gap: 16 }}>
+      <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+        <span id="save-toast" style={{ color: "#6fcf4a", opacity: 0, transition: "opacity 0.3s" }}>✓ 已保存</span>
         <span>HOI4 Mod Maker v0.1.0</span>
         {isDirty && (
           <span style={{ color: "var(--color-accent-gold)" }}>● 已修改</span>

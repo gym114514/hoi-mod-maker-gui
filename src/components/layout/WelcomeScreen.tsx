@@ -7,6 +7,10 @@ export function WelcomeScreen() {
   const [isCreating, setIsCreating] = useState(false);
 
   // 新建项目
+  const [showNameDialog, setShowNameDialog] = useState(false);
+  const [pendingFolder, setPendingFolder] = useState<string | null>(null);
+  const [projectName, setProjectName] = useState("My Awesome Mod");
+
   const handleNewProject = async () => {
     try {
       const folder = await open({
@@ -14,25 +18,24 @@ export function WelcomeScreen() {
         title: "选择 Mod 项目存放目录",
       });
       if (!folder) return;
-      setIsCreating(true);
-
-      // Get project name from user
-      const projectName = prompt(
-        "📁 输入 Mod 项目名称：",
-        "My Awesome Mod"
-      );
-      if (!projectName || !projectName.trim()) {
-        setIsCreating(false);
-        return;
-      }
-
-      await newProject(projectName.trim(), folder as string);
-      setIsCreating(false);
+      setPendingFolder(folder as string);
+      setShowNameDialog(true);
     } catch (e: unknown) {
+      alert("❌ 创建项目失败: " + (e instanceof Error ? e.message : String(e)));
+    }
+  };
+
+  const confirmNewProject = async () => {
+    if (!pendingFolder || !projectName.trim()) return;
+    setIsCreating(true);
+    setShowNameDialog(false);
+    try {
+      await newProject(projectName.trim(), pendingFolder);
+    } catch (e: unknown) {
+      alert("❌ 创建项目失败: " + (e instanceof Error ? e.message : String(e)));
+    } finally {
       setIsCreating(false);
-      alert(
-        "❌ 创建项目失败: " + (e instanceof Error ? e.message : String(e))
-      );
+      setPendingFolder(null);
     }
   };
 
@@ -142,16 +145,6 @@ export function WelcomeScreen() {
           description="仅打开一个 HOI4 脚本文件（.txt）"
           onClick={handleOpenFile}
         />
-
-        {/* Recent */}
-        <ActionCard
-          icon="🕐"
-          title="最近项目"
-          description="快速访问最近编辑的项目"
-          onClick={() => {
-            alert("最近项目功能即将上线！");
-          }}
-        />
       </div>
 
       {/* Features preview */}
@@ -187,6 +180,90 @@ export function WelcomeScreen() {
           </div>
         ))}
       </div>
+
+      {/* Name dialog */}
+      {showNameDialog && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(0,0,0,0.6)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+          }}
+          onClick={(e) => { if (e.target === e.currentTarget) setShowNameDialog(false); }}
+        >
+          <div
+            style={{
+              background: "#2a2a2a",
+              border: "1px solid #3d3d3d",
+              borderRadius: 12,
+              padding: "24px 28px",
+              minWidth: 360,
+            }}
+          >
+            <h3 style={{ margin: "0 0 16px", color: "#c9a227", fontSize: 16 }}>
+              📁 新建 Mod 项目
+            </h3>
+            <label style={{ fontSize: 12, color: "#a0a0a0", display: "block", marginBottom: 6 }}>
+              项目名称
+            </label>
+            <input
+              type="text"
+              value={projectName}
+              onChange={(e) => setProjectName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") confirmNewProject(); }}
+              autoFocus
+              style={{
+                width: "100%",
+                padding: "8px 12px",
+                fontSize: 14,
+                background: "#1a1a1a",
+                color: "#e0e0e0",
+                border: "1px solid #3d3d3d",
+                borderRadius: 6,
+                outline: "none",
+              }}
+            />
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 20 }}>
+              <button
+                onClick={() => setShowNameDialog(false)}
+                style={{
+                  padding: "6px 16px",
+                  fontSize: 13,
+                  background: "transparent",
+                  color: "#a0a0a0",
+                  border: "1px solid #3d3d3d",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                }}
+              >
+                取消
+              </button>
+              <button
+                onClick={confirmNewProject}
+                style={{
+                  padding: "6px 16px",
+                  fontSize: 13,
+                  background: "#c9a227",
+                  color: "#1a1a1a",
+                  border: "none",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  fontWeight: 600,
+                }}
+              >
+                创建
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

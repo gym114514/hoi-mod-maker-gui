@@ -7,21 +7,42 @@ interface TabConfig {
   id: EditorTab;
   label: string;
   icon: string;
+  ready?: boolean; // false = coming soon
 }
 
 const TABS: TabConfig[] = [
-  { id: "focus-tree", label: "国策树", icon: "🌲" },
-  { id: "ideas", label: "精神", icon: "💡" },
-  { id: "events", label: "事件", icon: "📜" },
-  { id: "characters", label: "角色", icon: "👤" },
-  { id: "decisions", label: "决议", icon: "📋" },
-  { id: "localisation", label: "本地化", icon: "🌐" },
-  { id: "code", label: "代码", icon: "⚙️" },
+  { id: "focus-tree", label: "国策树", icon: "🌲", ready: true },
+  { id: "code", label: "代码", icon: "⚙️", ready: true },
+  { id: "ideas", label: "精神", icon: "💡", ready: false },
+  { id: "events", label: "事件", icon: "📜", ready: false },
+  { id: "characters", label: "角色", icon: "👤", ready: false },
+  { id: "decisions", label: "决议", icon: "📋", ready: false },
+  { id: "localisation", label: "本地化", icon: "🌐", ready: false },
 ];
 
 export function Toolbar() {
   const { activeTab, setActiveTab, showValidationPanel, toggleValidationPanel, validationResult } = useEditorUIStore();
   const { project, isDirty, activeFile, files } = useProjectStore();
+
+  const handleSave = async () => {
+    const state = useProjectStore.getState();
+    const file = state.activeFile;
+    const tmp = state.tempPath;
+    if (!file) return;
+
+    try {
+      if (file.type === "focus_tree" && tmp) {
+        const content = await invoke<string>("get_file_preview", { path: tmp });
+        await invoke("write_text_file", { path: file.path, content });
+        state.updateFileContent(file.path, content);
+      } else if (file.content) {
+        await invoke("write_text_file", { path: file.path, content: file.content });
+      }
+      state.markClean();
+    } catch (e) {
+      alert("保存失败: " + e);
+    }
+  };
 
   const handleValidate = async () => {
     if (!activeFile) return;
@@ -30,7 +51,6 @@ export function Toolbar() {
         path: activeFile.path,
       });
       useEditorUIStore.getState().setValidationResult(result);
-      // Always open panel when validating
       if (!showValidationPanel) toggleValidationPanel();
     } catch (e) {
       alert("验证失败: " + e);
@@ -51,7 +71,6 @@ export function Toolbar() {
 
     try {
       if (activeFile.type === "focus_tree") {
-        // Use Rust exporter for proper HOI4 format
         const focusTree = useFocusTreeStore.getState().activeFocusTree;
         if (focusTree && focusTree.focuses.length > 0) {
           const json = JSON.stringify({ focuses: focusTree.focuses });
@@ -61,12 +80,10 @@ export function Toolbar() {
           });
           alert("✅ " + result);
         } else {
-          // Fallback: write raw content
           await invoke("write_text_file", { path: savePath, content: activeFile.content });
           alert("✅ 已导出到:\n" + savePath);
         }
       } else {
-        // Non-focus-tree: write raw content
         await invoke("write_text_file", { path: savePath, content: activeFile.content });
         useProjectStore.getState().markClean();
         alert("✅ 已导出到:\n" + savePath);
@@ -76,7 +93,6 @@ export function Toolbar() {
     }
   };
 
-  // Validation badge
   const errorCount = validationResult?.errors.length ?? 0;
   const warnCount = validationResult?.warnings.length ?? 0;
 
@@ -102,7 +118,6 @@ export function Toolbar() {
             {isDirty && <span style={{ color: "#c9a227" }}> •</span>}
           </span>
         )}
-        {/* File count badge */}
         {project && files.length > 0 && (
           <span
             style={{
@@ -118,9 +133,9 @@ export function Toolbar() {
         )}
       </div>
 
-      {/* Tab bar */}
+      {/* Tab bar — only show ready tabs prominently */}
       <div style={{ display: "flex", gap: 2 }}>
-        {TABS.map((tab) => (
+        {TABS.filter(t => t.ready).map((tab) => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
@@ -142,10 +157,55 @@ export function Toolbar() {
             <span>{tab.label}</span>
           </button>
         ))}
+        {/* Coming soon tabs — muted */}
+        {TABS.filter(t => !t.ready).map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            title="即将推出"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              padding: "6px 8px",
+              fontSize: 11,
+              background: "transparent",
+              color: activeTab === tab.id ? "#606060" : "#3a3a3a",
+              border: "none",
+              borderRadius: 4,
+              cursor: "pointer",
+              transition: "all 0.15s ease",
+            }}
+          >
+            <span>{tab.icon}</span>
+          </button>
+        ))}
       </div>
 
       {/* Right actions */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        {/* Save button (Ctrl+S) */}
+        <button
+          onClick={handleSave}
+          disabled={!activeFile || !isDirty}
+          title="保存 (Ctrl+S)"
+          style={{
+            padding: "4px 10px",
+            fontSize: 11,
+            background: isDirty ? "#2d5a1e" : "#2d2d2d",
+            color: isDirty ? "#6fcf4a" : "#505050",
+            border: "1px solid #3d3d3d",
+            borderRadius: 4,
+            cursor: activeFile && isDirty ? "pointer" : "not-allowed",
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+          }}
+        >
+          <span>💾</span>
+          <span>保存</span>
+        </button>
+
         {/* Validate button */}
         <button
           onClick={handleValidate}
@@ -216,7 +276,6 @@ export function Toolbar() {
         {/* Export button */}
         <button
           onClick={handleExport}
-          className="primary"
           style={{
             padding: "4px 12px",
             fontSize: 11,
@@ -228,7 +287,7 @@ export function Toolbar() {
             fontWeight: 600,
           }}
         >
-          💾 导出
+          📤 导出
         </button>
       </div>
     </div>
