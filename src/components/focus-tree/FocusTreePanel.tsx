@@ -3,7 +3,7 @@ import { useFocusTreeStore, useProjectStore, useEditorUIStore } from "@/stores";
 import { invoke } from "@tauri-apps/api/core";
 import { save, ask } from "@tauri-apps/plugin-dialog";
 import type { FocusTree, FocusNode } from "@/data/types";
-import { FocusTreeEditor } from "./FocusTreeEditor";
+import { FocusTreeEditor, type PickMode } from "./FocusTreeEditor";
 import { FocusPropertyPanel } from "./FocusPropertyPanel";
 import { ResizeHandle } from "@/components/common/ResizeHandle";
 
@@ -669,6 +669,8 @@ export function FocusTreePanel() {
   const [treeData, setTreeData] = useState<FocusNode[]>(DEMO_POLAND_TREE.focuses);
   const [parseError, setParseError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  // 拾取模式：右栏点击"画布选择"后，画布点击节点即填充对应字段
+  const [pickMode, setPickMode] = useState<PickMode | null>(null);
 
   // Expose debug info on window
   useEffect(() => {
@@ -904,6 +906,41 @@ export function FocusTreePanel() {
       }
     },
     [treeData, pushHistory, updateFocus]
+  );
+
+  // 拾取模式完成：把画布点选的节点写入当前国策的对应字段。
+  // 多选字段（前置组/互斥）Shift 点击连续添加；单选字段（相对位置）一次完成并退出。
+  const handlePickFocus = useCallback(
+    (id: string, add: boolean) => {
+      if (!pickMode || !selectedFocusId) return;
+      const focus = treeData.find((f) => f.id === selectedFocusId);
+      if (!focus || id === selectedFocusId) return;
+
+      let updates: Partial<FocusNode> = {};
+      switch (pickMode.type) {
+        case "relativePositionId":
+          updates = { relativePositionId: id };
+          break;
+        case "prereq": {
+          const groups = (focus.prerequisite || []).map((g) => [...g]);
+          if (!groups[pickMode.groupIdx]) groups[pickMode.groupIdx] = [];
+          if (!groups[pickMode.groupIdx].includes(id)) {
+            groups[pickMode.groupIdx].push(id);
+            updates = { prerequisite: groups };
+          }
+          break;
+        }
+        case "exclusive": {
+          const ex = focus.mutuallyExclusive || [];
+          if (!ex.includes(id)) updates = { mutuallyExclusive: [...ex, id] };
+          break;
+        }
+      }
+
+      if (Object.keys(updates).length > 0) handleFocusUpdate(selectedFocusId, updates);
+      if (!add) setPickMode(null);
+    },
+    [pickMode, selectedFocusId, treeData, handleFocusUpdate]
   );
 
   // Focus delete
@@ -1158,6 +1195,9 @@ export function FocusTreePanel() {
               onBatchDelete={handleBatchDelete}
               selectedNodeId={selectedFocusId}
               searchQuery={searchQuery}
+              pickMode={pickMode}
+              onPickFocus={handlePickFocus}
+              onPickDone={() => setPickMode(null)}
             />
           </div>
         </div>
@@ -1188,6 +1228,8 @@ export function FocusTreePanel() {
           onAddFocus={handleAddFocus}
           onClose={() => selectFocus(null)}
           allFocusIds={treeData.map((f) => f.id)}
+          pickMode={pickMode}
+          onRequestPick={setPickMode}
         />
       </div>
     </div>

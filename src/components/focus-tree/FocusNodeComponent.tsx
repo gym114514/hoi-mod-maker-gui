@@ -1,12 +1,9 @@
 import { memo } from "react";
 import { Handle, Position, type NodeProps } from "reactflow";
 import type { FocusNode } from "@/data/types";
+import { NODE_WIDTH, NODE_HEIGHT, EXCLUSIVE_HL_COLOR, SELECTED_HL_COLOR } from "./treeConstants";
 
 interface Props extends NodeProps<FocusNode> {}
-
-// Fixed node dimensions - MUST match focusToNode in FocusTreeEditor.tsx
-export const NODE_WIDTH = 190;
-export const NODE_HEIGHT = 100;
 
 import iconData from "@/data/icon_data.json";
 const ALL_ICONS: Record<string, { file: string; category: string }> = iconData as any;
@@ -62,7 +59,7 @@ export const FocusNodeComponent = memo(function FocusNodeComponent({
         position={Position.Left}
         id="left"
         style={{
-          background: "#d94a4a",
+          background: EXCLUSIVE_HL_COLOR,
           width: 6,
           height: 6,
           border: "none",
@@ -76,7 +73,7 @@ export const FocusNodeComponent = memo(function FocusNodeComponent({
         position={Position.Right}
         id="right"
         style={{
-          background: "#d94a4a",
+          background: EXCLUSIVE_HL_COLOR,
           width: 6,
           height: 6,
           border: "none",
@@ -178,7 +175,7 @@ export const FocusNodeComponent = memo(function FocusNodeComponent({
               </span>
             )}
             {data.innerCircle && (
-              <span style={{ color: "#c9a227", fontSize: 9 }}>⭕内圈</span>
+              <span style={{ color: SELECTED_HL_COLOR, fontSize: 9 }}>⭕内圈</span>
             )}
             {data.continuous && (
               <span style={{ color: "#4a90d9", fontSize: 9 }}>🔄连续</span>

@@ -16,11 +16,29 @@ import {
 } from "reactflow";
 import "reactflow/dist/style.css";
 import type { FocusNode } from "@/data/types";
-import { FocusNodeComponent, NODE_WIDTH, NODE_HEIGHT } from "./FocusNodeComponent";
+import { FocusNodeComponent } from "./FocusNodeComponent";
 import BrokenLineEdge from "./BrokenLineEdge";
 import { ask } from "@tauri-apps/plugin-dialog";
+import {
+  GRID_X,
+  GRID_Y,
+  NODE_WIDTH,
+  NODE_HEIGHT,
+  SELECTED_HL_COLOR,
+  PREREQ_HL_COLORS,
+  EXCLUSIVE_HL_COLOR,
+  SEARCH_HL_COLOR,
+  PREREQ_LINE_COLOR,
+  PREREQ_OR_LINE_COLOR,
+} from "./treeConstants";
 
 // ---------- Props ----------
+
+/** 拾取模式：从画布点选节点来填充右栏字段。type 对应字段，groupIdx 为前置组索引 */
+export type PickMode =
+  | { type: "relativePositionId" }
+  | { type: "prereq"; groupIdx: number }
+  | { type: "exclusive" };
 
 interface Props {
   focusTree: {
@@ -31,24 +49,10 @@ interface Props {
   onBatchDelete: (ids: string[]) => void;
   selectedNodeId: string | null;
   searchQuery?: string;
+  pickMode?: PickMode | null;
+  onPickFocus?: (id: string, add: boolean) => void;
+  onPickDone?: () => void;
 }
-
-// ---------- Constants ----------
-
-const GRID_X = 180;
-const GRID_Y = 180;
-
-export { GRID_X, GRID_Y };
-
-// 高亮颜色 —— 全部由 focusToNode 统一描边（FocusNodeComponent 不再管边框）
-const SELECTED_HL_COLOR = "#c9a227"; // 选中金（与组件内文字/背景的选中色一致）
-const PREREQ_HL_COLORS = ["#4a9de0", "#3fbf8f", "#9d6de0", "#e8930c"];
-const EXCLUSIVE_HL_COLOR = "#d94a4a";
-const SEARCH_HL_COLOR = "#2ac3de";
-
-// 连线颜色 —— 贴近原版：前置灰线、互斥红线
-const PREREQ_LINE_COLOR = "#9a9a9a";
-const PREREQ_OR_LINE_COLOR = "#808080";
 
 // ---------- Node Component Map ----------
 
@@ -311,10 +315,10 @@ function buildEdges(focuses: FocusNode[], absolutePositions: Map<string, { x: nu
     for (const exId of focus.mutuallyExclusive || []) {
       const exFocus = focuses.find((f) => f.id === exId);
       if (!exFocus) continue;
-      if (focus.y !== exFocus.y) continue;
+      if ((absolutePositions.get(focus.id)?.y ?? 0) !== (absolutePositions.get(exFocus.id)?.y ?? 0)) continue;
       const pairKey = [focus.id, exId].sort().join("||");
       if (!mutualEdges.has(pairKey)) {
-        mutualEdges.set(pairKey, { a: focus.id, b: exId, y: focus.y });
+        mutualEdges.set(pairKey, { a: focus.id, b: exId, y: (absolutePositions.get(focus.id)?.y ?? 0) });
       }
     }
   }
@@ -334,7 +338,7 @@ function buildEdges(focuses: FocusNode[], absolutePositions: Map<string, { x: nu
       adj.get(b)!.add(a);
     }
     const nodeIds = [...adj.keys()].sort(
-      (a, b) => (focuses.find((f) => f.id === a)?.x ?? 0) - (focuses.find((f) => f.id === b)?.x ?? 0)
+      (a, b) => (absolutePositions.get(a)?.x ?? 0) - (absolutePositions.get(b)?.x ?? 0)
     );
     const adjacentPairs = new Set<string>();
     for (let i = 0; i < nodeIds.length - 1; i++) {
@@ -354,7 +358,7 @@ function buildEdges(focuses: FocusNode[], absolutePositions: Map<string, { x: nu
       const focusB = focuses.find((f) => f.id === b);
       if (!focusA || !focusB) continue;
       // Dynamically determine handle based on relative position
-      const aIsLeft = focusA.x <= focusB.x;
+      const aIsLeft = (absolutePositions.get(a)?.x ?? 0) <= (absolutePositions.get(b)?.x ?? 0);
       const source = aIsLeft ? a : b;
       const target = aIsLeft ? b : a;
       edges.push({
@@ -385,6 +389,9 @@ function FocusTreeEditorInner({
   onBatchDelete,
   selectedNodeId,
   searchQuery,
+  pickMode = null,
+  onPickFocus,
+  onPickDone,
 }: Props) {
   const { fitView, setCenter, getViewport, setViewport } = useReactFlow();
 
@@ -445,12 +452,13 @@ function FocusTreeEditorInner({
     (changes: NodeChange[]) => {
       setNodes((nds) => applyNodeChanges(changes, nds));
       for (const ch of changes) {
-        if (ch.type === "select" && ch.selected) {
+        // 拾取模式：点击不改变当前选中（拾取语义由 handleNodeClick 接管）
+        if (ch.type === "select" && ch.selected && !pickMode) {
           onNodeSelect(ch.id);
         }
       }
     },
-    [onNodeSelect]
+    [onNodeSelect, pickMode]
   );
 
   // Drag start/end: guard against useEffect overwriting drag position
@@ -500,24 +508,48 @@ function FocusTreeEditorInner({
     []
   );
 
-  // Node click
+  // Node click — 拾取模式：点击节点即拾取（Shift=连续添加），不改变选中
   const handleNodeClick = useCallback(
-    (_event: React.MouseEvent, node: Node) => {
+    (event: React.MouseEvent, node: Node) => {
+      if (pickMode) {
+        onPickFocus?.(node.id, event.shiftKey);
+        return;
+      }
       onNodeSelect(node.id);
     },
-    [onNodeSelect]
+    [onNodeSelect, pickMode, onPickFocus]
   );
 
-  // Node double-click → center
+  // Node double-click → center（拾取模式下禁用）
   const handleNodeDoubleClick = useCallback(
     (_event: React.MouseEvent, node: Node) => {
+      if (pickMode) return;
       setCenter(node.position.x + GRID_X / 2, node.position.y + GRID_Y / 2, {
         zoom: 1,
         duration: 300,
       });
     },
-    [setCenter]
+    [setCenter, pickMode]
   );
+
+  // Esc 取消拾取
+  useEffect(() => {
+    if (!pickMode) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onPickDone?.();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [pickMode, onPickDone]);
+
+  // 拾取模式提示条文案
+  const pickHint = pickMode
+    ? pickMode.type === "relativePositionId"
+      ? "点击画布选择相对位置国策"
+      : pickMode.type === "prereq"
+        ? `点击画布添加国策到前置组 ${pickMode.groupIdx + 1}`
+        : "点击画布添加互斥国策"
+    : null;
 
   // Minimap color
   const minimapNodeColor = useCallback(
@@ -601,8 +633,10 @@ function FocusTreeEditorInner({
         defaultViewport={{ x: 0, y: 0, zoom: 1 }}
         minZoom={0.05}
         proOptions={{ hideAttribution: true }}
-        deleteKeyCode={["Backspace", "Delete"]}
+        nodesDraggable={!pickMode}
+        deleteKeyCode={pickMode ? null : ["Backspace", "Delete"]}
         multiSelectionKeyCode="Shift"
+        onPaneClick={pickMode ? onPickDone : undefined}
         onNodesDelete={async (deletedNodes) => {
           if (deletedNodes.length > 0 && await ask(`删除 ${deletedNodes.length} 个选中节点？`, { title: '确认删除' })) {
             onBatchDelete(deletedNodes.map((n) => n.id));
@@ -627,6 +661,34 @@ function FocusTreeEditorInner({
           zoomable
         />
       </ReactFlow>
+      {pickMode && pickHint && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 12,
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 20,
+            background: "rgba(20,24,30,0.92)",
+            border: "1px solid #4a90d9",
+            borderRadius: 6,
+            padding: "6px 14px",
+            fontSize: 12,
+            color: "#dbe7f5",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            pointerEvents: "none",
+            userSelect: "none",
+            whiteSpace: "nowrap",
+          }}
+        >
+          📌 {pickHint}
+          <span style={{ color: "#707070", fontSize: 11 }}>
+            · Shift+点击连续添加 · 点击空白/Esc 取消
+          </span>
+        </div>
+      )}
     </div>
   );
 }
