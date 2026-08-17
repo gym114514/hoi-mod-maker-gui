@@ -74,8 +74,8 @@ export default function BrokenLineEdge({
     pathD = `M ${sx} ${sy} L ${sx} ${midY} L ${tx} ${midY} L ${tx} ${ty}`;
   }
 
-  // 互斥用红色，前置用蓝色
-  const edgeColor = isExclusive ? "#d94a4a" : "#4a90d9";
+  // 互斥用红色，前置用灰色（与 FocusTreeEditor 的常量一致；style 优先于此处 fallback）
+  const edgeColor = isExclusive ? "#d94a4a" : "#9a9a9a";
   const finalStyle = {
     ...style,
     stroke: style?.stroke || edgeColor,
