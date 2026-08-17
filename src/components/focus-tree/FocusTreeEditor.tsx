@@ -311,10 +311,10 @@ function buildEdges(focuses: FocusNode[], absolutePositions: Map<string, { x: nu
     for (const exId of focus.mutuallyExclusive || []) {
       const exFocus = focuses.find((f) => f.id === exId);
       if (!exFocus) continue;
-      if (focus.y !== exFocus.y) continue;
+      if ((absolutePositions.get(focus.id)?.y ?? 0) !== (absolutePositions.get(exFocus.id)?.y ?? 0)) continue;
       const pairKey = [focus.id, exId].sort().join("||");
       if (!mutualEdges.has(pairKey)) {
-        mutualEdges.set(pairKey, { a: focus.id, b: exId, y: focus.y });
+        mutualEdges.set(pairKey, { a: focus.id, b: exId, y: (absolutePositions.get(focus.id)?.y ?? 0) });
       }
     }
   }
@@ -334,7 +334,7 @@ function buildEdges(focuses: FocusNode[], absolutePositions: Map<string, { x: nu
       adj.get(b)!.add(a);
     }
     const nodeIds = [...adj.keys()].sort(
-      (a, b) => (focuses.find((f) => f.id === a)?.x ?? 0) - (focuses.find((f) => f.id === b)?.x ?? 0)
+      (a, b) => (absolutePositions.get(a)?.x ?? 0) - (absolutePositions.get(b)?.x ?? 0)
     );
     const adjacentPairs = new Set<string>();
     for (let i = 0; i < nodeIds.length - 1; i++) {
@@ -354,7 +354,7 @@ function buildEdges(focuses: FocusNode[], absolutePositions: Map<string, { x: nu
       const focusB = focuses.find((f) => f.id === b);
       if (!focusA || !focusB) continue;
       // Dynamically determine handle based on relative position
-      const aIsLeft = focusA.x <= focusB.x;
+      const aIsLeft = (absolutePositions.get(a)?.x ?? 0) <= (absolutePositions.get(b)?.x ?? 0);
       const source = aIsLeft ? a : b;
       const target = aIsLeft ? b : a;
       edges.push({

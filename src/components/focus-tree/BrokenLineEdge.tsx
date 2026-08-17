@@ -51,13 +51,11 @@ export default function BrokenLineEdge({
   const ty = targetY;
 
   let pathD: string;
-  let strokeDasharray: string | undefined;
 
   if (isExclusive) {
     // 互斥连线：水平虚线（参考 ExclusiveLine）
     const midY = (sy + ty) / 2;
     pathD = `M ${sx} ${midY} L ${tx} ${midY}`;
-    strokeDasharray = "6 4";
   } else if (Math.abs(sy - ty) < 5) {
     // 同行：直接水平线
     pathD = `M ${sx} ${sy} L ${tx} ${ty}`;
@@ -76,12 +74,13 @@ export default function BrokenLineEdge({
   }
 
   // 互斥用红色，前置用灰色（与 FocusTreeEditor 的常量一致；style 优先于此处 fallback）
+  // 虚线只对互斥强制，其余（含 OR 前置的 "6,3"）透传 style 的设置
   const edgeColor = isExclusive ? "#d94a4a" : "#9a9a9a";
   const finalStyle = {
     ...style,
     stroke: style?.stroke || edgeColor,
     strokeWidth: isExclusive ? 2 : style?.strokeWidth || 2,
-    strokeDasharray,
+    strokeDasharray: isExclusive ? "6 4" : style?.strokeDasharray,
   };
 
   return (
