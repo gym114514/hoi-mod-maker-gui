@@ -357,3 +357,11 @@ pre {
   0% { background: rgba(231, 76, 60, 0.3); }
   100% { background: rgba(231, 76, 60, 0.15); }
 }
+/* Focus node highlight backgrounds — 由 FocusTreeEditor 的 focusToNode 输出 className 决定 */
+.react-flow__node.hl-selected .focus-node { background: #2d3a4a; }
+.react-flow__node.hl-pre-0 .focus-node { background: rgba(74, 157, 224, 0.18); }
+.react-flow__node.hl-pre-1 .focus-node { background: rgba(63, 191, 143, 0.18); }
+.react-flow__node.hl-pre-2 .focus-node { background: rgba(157, 109, 224, 0.18); }
+.react-flow__node.hl-pre-3 .focus-node { background: rgba(232, 147, 12, 0.18); }
+.react-flow__node.hl-exclusive .focus-node { background: rgba(217, 74, 74, 0.22); }
+.react-flow__node.hl-search .focus-node { background: rgba(42, 195, 222, 0.14); }

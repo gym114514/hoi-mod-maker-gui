@@ -11,13 +11,16 @@ export const NODE_HEIGHT = 100;
 import iconData from "@/data/icon_data.json";
 const ALL_ICONS: Record<string, { file: string; category: string }> = iconData as any;
 
+// 节点视觉约定：
+// - 背景色由 CSS 类控制（.focus-node 默认 + FocusTreeEditor 输出的 .hl-* 高亮类）
+// - 描边/光晕由 FocusTreeEditor 的 focusToNode 通过 node style 的 boxShadow 控制
+// - 此处只保留静态布局与文字配色
 export const FocusNodeComponent = memo(function FocusNodeComponent({
   data,
-  selected,
 }: Props) {
   const iconEntry = ALL_ICONS[data.icon || ""];
   const iconFile = iconEntry?.file;
-  
+
   // Calculate actual days (cost × 7)
   const days = data.cost * 7;
 
@@ -28,12 +31,9 @@ export const FocusNodeComponent = memo(function FocusNodeComponent({
         width: NODE_WIDTH,
         height: NODE_HEIGHT,
         padding: "8px 12px",
-        background: selected ? "#2d3a4a" : "#242424",
-        border: selected
-          ? "2px solid #c9a227"
-          : "1px solid #3d3d3d",
+        border: "1px solid #3d3d3d",
         borderRadius: 6,
-        boxShadow: selected ? "0 0 12px rgba(201, 162, 39, 0.4)" : "0 2px 8px rgba(0,0,0,0.4)",
+        boxShadow: "0 2px 8px rgba(0,0,0,0.4)",
         cursor: "pointer",
         userSelect: "none",
         display: "flex",
@@ -93,7 +93,7 @@ export const FocusNodeComponent = memo(function FocusNodeComponent({
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            background: selected ? "#c9a227" : "#2d2d2d",
+            background: "#2d2d2d",
             borderRadius: 4,
             flexShrink: 0,
             overflow: "hidden",
@@ -112,7 +112,7 @@ export const FocusNodeComponent = memo(function FocusNodeComponent({
             style={{
               fontSize: 12,
               fontWeight: 600,
-              color: selected ? "#c9a227" : "#e8e8e8",
+              color: "#e8e8e8",
               whiteSpace: "nowrap",
               overflow: "hidden",
               textOverflow: "ellipsis",
@@ -239,6 +239,9 @@ export const FocusNodeComponent = memo(function FocusNodeComponent({
 
 // CSS for focus-node class (also defined in global.css)
 const styles = `
+.focus-node {
+  background: #242424;
+}
 .focus-node:hover {
   border-color: #5a5a5a;
   box-shadow: 0 0 12px rgba(255,255,255,0.08), 0 2px 8px rgba(0,0,0,0.4);

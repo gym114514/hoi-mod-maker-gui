@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   ReactFlow,
   Controls,
@@ -37,6 +37,16 @@ interface Props {
 
 const GRID_X = 180;
 const GRID_Y = 115;
+
+// 高亮颜色 —— 全部由 focusToNode 统一描边（FocusNodeComponent 不再管边框）
+const SELECTED_HL_COLOR = "#c9a227"; // 选中金（与组件内文字/背景的选中色一致）
+const PREREQ_HL_COLORS = ["#4a9de0", "#3fbf8f", "#9d6de0", "#e8930c"];
+const EXCLUSIVE_HL_COLOR = "#d94a4a";
+const SEARCH_HL_COLOR = "#2ac3de";
+
+// 连线颜色 —— 贴近原版：前置灰线、互斥红线
+const PREREQ_LINE_COLOR = "#9a9a9a";
+const PREREQ_OR_LINE_COLOR = "#808080";
 
 // ---------- Node Component Map ----------
 
@@ -112,11 +122,51 @@ function resolvePositions(focuses: FocusNode[]): Map<string, { x: number; y: num
 
 // ---------- Helper Functions ----------
 
+/** 节点关联高亮类型：前置国策（按组取色）或互斥国策 */
+interface NodeHighlight {
+  kind: "prereq" | "exclusive";
+  groupIdx?: number;
+}
+
+/**
+ * 由选中的国策派生关联高亮映射：nodeId -> highlight
+ * 各组前置国策按 prerequisite 的组索引分色；互斥国策统一红色。
+ */
+function buildHighlightMap(
+  focuses: FocusNode[],
+  selectedId: string | null
+): Map<string, NodeHighlight> {
+  const map = new Map<string, NodeHighlight>();
+  if (!selectedId) return map;
+  const selected = focuses.find((f) => f.id === selectedId);
+  if (!selected) return map;
+
+  (selected.prerequisite || []).forEach((group, groupIdx) => {
+    for (const pid of group) {
+      if (pid === selectedId) continue;
+      map.set(pid, { kind: "prereq", groupIdx });
+    }
+  });
+
+  for (const exId of selected.mutuallyExclusive || []) {
+    if (exId === selectedId) continue;
+    map.set(exId, { kind: "exclusive" });
+  }
+
+  return map;
+}
+
+function highlightColor(hl: NodeHighlight): string {
+  if (hl.kind === "exclusive") return EXCLUSIVE_HL_COLOR;
+  return PREREQ_HL_COLORS[(hl.groupIdx ?? 0) % PREREQ_HL_COLORS.length];
+}
+
 function focusToNode(
   focus: FocusNode,
   absolutePos: { x: number; y: number },
   selectedNodeId: string | null,
-  searchQuery?: string
+  searchQuery?: string,
+  highlight?: NodeHighlight
 ): Node<FocusNode> {
   const q = searchQuery?.toLowerCase();
   const matchesSearch =
@@ -127,6 +177,34 @@ function focusToNode(
       (focus.completionReward && focus.completionReward.toLowerCase().includes(q))
     );
 
+  // 高亮优先级：选中 > 关联（互斥/前置） > 搜索；同一节点只渲染一种高亮
+  // 描边走 style，背景色走 className（global.css 里 .hl-* 规则），决策统一在此
+  let style: CSSProperties | undefined;
+  let hlClass: string | undefined;
+  if (focus.id === selectedNodeId) {
+    hlClass = "hl-selected";
+    style = {
+      boxShadow: `0 0 0 3px ${SELECTED_HL_COLOR}, 0 0 20px ${SELECTED_HL_COLOR}99, inset 0 0 8px ${SELECTED_HL_COLOR}33`,
+      zIndex: 10,
+    };
+  } else if (highlight) {
+    const color = highlightColor(highlight);
+    hlClass =
+      highlight.kind === "exclusive"
+        ? "hl-exclusive"
+        : `hl-pre-${(highlight.groupIdx ?? 0) % PREREQ_HL_COLORS.length}`;
+    style = {
+      boxShadow: `0 0 0 3px ${color}, 0 0 18px ${color}80, inset 0 0 8px ${color}40`,
+      zIndex: 6,
+    };
+  } else if (matchesSearch) {
+    hlClass = "hl-search";
+    style = {
+      boxShadow: `0 0 0 3px ${SEARCH_HL_COLOR}, 0 0 20px ${SEARCH_HL_COLOR}8c, inset 0 0 8px ${SEARCH_HL_COLOR}30`,
+      zIndex: 5,
+    };
+  }
+
   const pixelX = absolutePos.x * GRID_X - NODE_WIDTH / 2;
   const pixelY = absolutePos.y * GRID_Y - NODE_HEIGHT / 2;
 
@@ -136,12 +214,8 @@ function focusToNode(
     position: { x: pixelX, y: pixelY },
     data: focus,
     selected: focus.id === selectedNodeId,
-    style: matchesSearch
-      ? {
-          boxShadow: "0 0 0 3px #c9a227, 0 0 20px rgba(201,162,39,0.6)",
-          zIndex: 10,
-        }
-      : undefined,
+    className: hlClass,
+    style,
   };
 }
 
@@ -183,12 +257,12 @@ function buildEdges(focuses: FocusNode[]): Edge[] {
             sourceHandle: "bottom",
             targetHandle: "top",
             type: "brokenLine",
-            style: { stroke: "#4a90d9", strokeWidth: 2 },
+            style: { stroke: PREREQ_LINE_COLOR, strokeWidth: 2 },
             animated: false,
-            markerEnd: { type: MarkerType.ArrowClosed, color: "#4a90d9" },
+            markerEnd: { type: MarkerType.ArrowClosed, color: PREREQ_LINE_COLOR },
             data: { kind: "prerequisite_and", ...edgeData },
             label: "AND",
-            labelStyle: { fill: "#4a90d9", fontSize: 9, fontWeight: 700 },
+            labelStyle: { fill: PREREQ_LINE_COLOR, fontSize: 9, fontWeight: 700 },
             labelBgStyle: { fill: "#1a1a1a", fillOpacity: 0.8 },
             labelBgPadding: [2, 4] as [number, number],
             labelBgBorderRadius: 3,
@@ -201,12 +275,12 @@ function buildEdges(focuses: FocusNode[]): Edge[] {
             sourceHandle: "bottom",
             targetHandle: "top",
             type: "brokenLine",
-            style: { stroke: "#7ab8e8", strokeWidth: 1.5, strokeDasharray: "6,3" },
+            style: { stroke: PREREQ_OR_LINE_COLOR, strokeWidth: 1.5, strokeDasharray: "6,3" },
             animated: false,
-            markerEnd: { type: MarkerType.ArrowClosed, color: "#7ab8e8" },
+            markerEnd: { type: MarkerType.ArrowClosed, color: PREREQ_OR_LINE_COLOR },
             data: { kind: "prerequisite_or", groupIdx, ...edgeData },
             label: "OR",
-            labelStyle: { fill: "#7ab8e8", fontSize: 9, fontWeight: 700 },
+            labelStyle: { fill: PREREQ_OR_LINE_COLOR, fontSize: 9, fontWeight: 700 },
             labelBgStyle: { fill: "#1a1a1a", fillOpacity: 0.8 },
             labelBgPadding: [2, 4] as [number, number],
             labelBgBorderRadius: 3,
@@ -219,9 +293,9 @@ function buildEdges(focuses: FocusNode[]): Edge[] {
             sourceHandle: "bottom",
             targetHandle: "top",
             type: "brokenLine",
-            style: { stroke: "#4a90d9", strokeWidth: 2 },
+            style: { stroke: PREREQ_LINE_COLOR, strokeWidth: 2 },
             animated: false,
-            markerEnd: { type: MarkerType.ArrowClosed, color: "#4a90d9" },
+            markerEnd: { type: MarkerType.ArrowClosed, color: PREREQ_LINE_COLOR },
             data: { kind: "prerequisite", ...edgeData },
           });
         }
@@ -288,10 +362,10 @@ function buildEdges(focuses: FocusNode[]): Edge[] {
         sourceHandle: "right",
         targetHandle: "left",
         type: "brokenLine",
-        style: { stroke: "#d94a4a", strokeWidth: 2 },
+        style: { stroke: EXCLUSIVE_HL_COLOR, strokeWidth: 2 },
         animated: false,
-        markerStart: { type: MarkerType.ArrowClosed, color: "#d94a4a" },
-        markerEnd: { type: MarkerType.ArrowClosed, color: "#d94a4a" },
+        markerStart: { type: MarkerType.ArrowClosed, color: EXCLUSIVE_HL_COLOR },
+        markerEnd: { type: MarkerType.ArrowClosed, color: EXCLUSIVE_HL_COLOR },
         data: { kind: "mutuallyExclusive", isExclusive: true },
       });
     }
@@ -321,14 +395,20 @@ function FocusTreeEditorInner({
     [focusTree.focuses]
   );
 
+  // 选中国策的关联高亮映射（前置/互斥）
+  const highlightMap = useMemo(
+    () => buildHighlightMap(focusTree.focuses, selectedNodeId),
+    [focusTree.focuses, selectedNodeId]
+  );
+
   // Build nodes
   const initialNodes = useMemo(
     () =>
       focusTree.focuses.map((f) => {
         const abs = absolutePositions.get(f.id) || { x: f.x, y: f.y };
-        return focusToNode(f, abs, selectedNodeId, searchQuery);
+        return focusToNode(f, abs, selectedNodeId, searchQuery, highlightMap.get(f.id));
       }),
-    [focusTree.focuses, absolutePositions, selectedNodeId, searchQuery]
+    [focusTree.focuses, absolutePositions, selectedNodeId, searchQuery, highlightMap]
   );
 
   // Build edges
