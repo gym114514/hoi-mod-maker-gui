@@ -5,6 +5,8 @@
  * 互斥连线（ExclusiveLine）：水平虚线
  */
 import { type EdgeProps } from "reactflow";
+import { GRID_Y } from "./FocusTreeEditor";
+import { NODE_HEIGHT } from "./FocusNodeComponent";
 
 /**
  * yQuery — 垂直障碍扫描（等价 C++ yQuery）
@@ -40,7 +42,7 @@ export default function BrokenLineEdge({
   const occupiedGrid: Set<string> = data?.occupiedGrid ?? new Set();
   const sourceGridY: number = data?.sourceGridY ?? 0;
   const targetGridY: number = data?.targetGridY ?? 0;
-  const sourceGridX: number = data?.sourceGridX ?? 0;
+  const targetGridX: number = data?.targetGridX ?? 0;
   const isExclusive: boolean = data?.isExclusive ?? false;
 
   const sx = sourceX;
@@ -61,11 +63,10 @@ export default function BrokenLineEdge({
     pathD = `M ${sx} ${sy} L ${tx} ${ty}`;
   } else if (sy < ty) {
     // 正常方向（上→下）：参考 SolidLine 的 BrokenLine 路由
-    const turnRow = yQuery(sourceGridY, targetGridY, sourceGridX, occupiedGrid);
-    const totalRows = Math.max(targetGridY - sourceGridY, 1);
+    const turnRow = yQuery(sourceGridY, targetGridY, targetGridX, occupiedGrid);
     const turnOffset = turnRow - sourceGridY;
-    const turnY = sy + (ty - sy) * (turnOffset / totalRows);
-
+    // 转弯点落在行间空隙带中间：(GRID_Y - NODE_HEIGHT) / 2 即空隙的一半
+    const turnY = sy + GRID_Y * (turnOffset - 1) + (GRID_Y - NODE_HEIGHT) / 2;
     // 三段折线：垂直向下 → 水平 → 垂直向下
     pathD = `M ${sx} ${sy} L ${sx} ${turnY} L ${tx} ${turnY} L ${tx} ${ty}`;
   } else {

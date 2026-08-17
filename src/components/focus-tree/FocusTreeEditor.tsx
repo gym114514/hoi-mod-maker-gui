@@ -36,7 +36,9 @@ interface Props {
 // ---------- Constants ----------
 
 const GRID_X = 180;
-const GRID_Y = 115;
+const GRID_Y = 180;
+
+export { GRID_X, GRID_Y };
 
 // 高亮颜色 —— 全部由 focusToNode 统一描边（FocusNodeComponent 不再管边框）
 const SELECTED_HL_COLOR = "#c9a227"; // 选中金（与组件内文字/背景的选中色一致）
@@ -219,13 +221,13 @@ function focusToNode(
   };
 }
 
-function buildEdges(focuses: FocusNode[]): Edge[] {
+function buildEdges(focuses: FocusNode[], absolutePositions: Map<string, { x: number; y: number }>): Edge[] {
   const edges: Edge[] = [];
 
   // 构建占据网格（用于折线障碍检测）
   const occupiedGrid = new Set<string>();
   for (const f of focuses) {
-    occupiedGrid.add(`${f.x},${f.y}`);
+    occupiedGrid.add(`${absolutePositions.get(f.id)?.x ?? 0},${absolutePositions.get(f.id)?.y ?? 0}`);
   }
 
   for (const focus of focuses) {
@@ -242,10 +244,10 @@ function buildEdges(focuses: FocusNode[]): Edge[] {
 
         // 网格坐标传递给自定义边
         const edgeData = {
-          sourceGridX: preFocus.x,
-          sourceGridY: preFocus.y,
-          targetGridX: focus.x,
-          targetGridY: focus.y,
+          sourceGridX: absolutePositions.get(preId)?.x ?? 0,
+          sourceGridY: absolutePositions.get(preId)?.y ?? 0,
+          targetGridX: absolutePositions.get(focus.id)?.x ?? 0,
+          targetGridY: absolutePositions.get(focus.id)?.y ?? 0,
           occupiedGrid,
         };
 
@@ -413,8 +415,8 @@ function FocusTreeEditorInner({
 
   // Build edges
   const initialEdges = useMemo(
-    () => buildEdges(focusTree.focuses),
-    [focusTree.focuses]
+    () => buildEdges(focusTree.focuses, absolutePositions),
+    [focusTree.focuses, absolutePositions]
   );
 
   const [nodes, setNodes] = useState<Node<FocusNode>[]>(() => initialNodes);
@@ -530,7 +532,7 @@ function FocusTreeEditorInner({
           (focus.searchFilters && focus.searchFilters.some((f) => f.toLowerCase().includes(q))) ||
           (focus.completionReward && focus.completionReward.toLowerCase().includes(q))
         )) {
-          return "#d9944a";
+          return SEARCH_HL_COLOR;
         }
       }
       return "#3a5a8c";
