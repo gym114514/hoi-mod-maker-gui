@@ -730,6 +730,11 @@ export function FocusTreePanel() {
     });
   }, [treeData, focusConditions, satisfiedIds]);
 
+  const visibleFocusIds = useMemo(
+    () => filteredFocuses.map((f) => f.id),
+    [filteredFocuses]
+  );
+
   // Toggle an atomic condition
   const handleAtomicToggle = useCallback((id: string) => {
     setSatisfiedIds((prev) => {
@@ -1213,7 +1218,8 @@ export function FocusTreePanel() {
           />
           <div style={{ flex: 1 }}>
             <FocusTreeEditor
-              focusTree={{ focuses: filteredFocuses }}
+              focusTree={{ focuses: treeData }}
+              visibleFocusIds={visibleFocusIds}
               onNodeMove={handleNodeMove}
               onNodeSelect={selectFocus}
               onBatchDelete={handleBatchDelete}

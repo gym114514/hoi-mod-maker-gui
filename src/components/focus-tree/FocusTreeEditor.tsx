@@ -44,6 +44,7 @@ interface Props {
   focusTree: {
     focuses: FocusNode[];
   };
+  visibleFocusIds?: string[];
   onNodeMove: (id: string, x: number, y: number) => void;
   onNodeSelect: (id: string) => void;
   onBatchDelete: (ids: string[]) => void;
@@ -384,6 +385,7 @@ function buildEdges(focuses: FocusNode[], absolutePositions: Map<string, { x: nu
 
 function FocusTreeEditorInner({
   focusTree,
+  visibleFocusIds,
   onNodeMove,
   onNodeSelect,
   onBatchDelete,
@@ -404,26 +406,39 @@ function FocusTreeEditorInner({
     [focusTree.focuses]
   );
 
+  const visibleIdSet = useMemo(
+    () => new Set(visibleFocusIds ?? focusTree.focuses.map((f) => f.id)),
+    [visibleFocusIds, focusTree.focuses]
+  );
+
+  const visibleFocuses = useMemo(
+    () => focusTree.focuses.filter((f) => visibleIdSet.has(f.id)),
+    [focusTree.focuses, visibleIdSet]
+  );
+
   // 选中国策的关联高亮映射（前置/互斥）
   const highlightMap = useMemo(
-    () => buildHighlightMap(focusTree.focuses, selectedNodeId),
-    [focusTree.focuses, selectedNodeId]
+    () => buildHighlightMap(visibleFocuses, selectedNodeId),
+    [visibleFocuses, selectedNodeId]
   );
 
   // Build nodes
   const initialNodes = useMemo(
     () =>
-      focusTree.focuses.map((f) => {
+      visibleFocuses.map((f) => {
         const abs = absolutePositions.get(f.id) || { x: f.x, y: f.y };
         return focusToNode(f, abs, selectedNodeId, searchQuery, highlightMap.get(f.id));
       }),
-    [focusTree.focuses, absolutePositions, selectedNodeId, searchQuery, highlightMap]
+    [visibleFocuses, absolutePositions, selectedNodeId, searchQuery, highlightMap]
   );
 
   // Build edges
   const initialEdges = useMemo(
-    () => buildEdges(focusTree.focuses, absolutePositions),
-    [focusTree.focuses, absolutePositions]
+    () =>
+      buildEdges(focusTree.focuses, absolutePositions).filter(
+        (e) => visibleIdSet.has(e.source) && visibleIdSet.has(e.target)
+      ),
+    [focusTree.focuses, absolutePositions, visibleIdSet]
   );
 
   const [nodes, setNodes] = useState<Node<FocusNode>[]>(() => initialNodes);
@@ -439,13 +454,13 @@ function FocusTreeEditorInner({
   // Fit view on first load
   const hasFitViewRef = useRef(false);
   useEffect(() => {
-    if (!hasFitViewRef.current && focusTree.focuses.length > 0) {
+    if (!hasFitViewRef.current && visibleFocuses.length > 0) {
       setTimeout(() => {
         fitView({ padding: 0.2, duration: 300 });
         hasFitViewRef.current = true;
       }, 50);
     }
-  }, [focusTree.focuses.length, fitView]);
+  }, [visibleFocuses.length, fitView]);
 
   // Node change handler: apply all changes via official API
   const handleNodesChange = useCallback(
