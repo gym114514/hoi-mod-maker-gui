@@ -5,8 +5,7 @@
  * 互斥连线（ExclusiveLine）：水平虚线
  */
 import { type EdgeProps } from "reactflow";
-import { GRID_Y } from "./FocusTreeEditor";
-import { NODE_HEIGHT } from "./FocusNodeComponent";
+import { GRID_Y, NODE_HEIGHT, EXCLUSIVE_HL_COLOR, PREREQ_LINE_COLOR } from "./treeConstants";
 
 /**
  * yQuery — 垂直障碍扫描（等价 C++ yQuery）
@@ -73,9 +72,9 @@ export default function BrokenLineEdge({
     pathD = `M ${sx} ${sy} L ${sx} ${midY} L ${tx} ${midY} L ${tx} ${ty}`;
   }
 
-  // 互斥用红色，前置用灰色（与 FocusTreeEditor 的常量一致；style 优先于此处 fallback）
+  // 互斥用红色，前置用灰色（与 treeConstants 一致；style 优先于此处 fallback）
   // 虚线只对互斥强制，其余（含 OR 前置的 "6,3"）透传 style 的设置
-  const edgeColor = isExclusive ? "#d94a4a" : "#9a9a9a";
+  const edgeColor = isExclusive ? EXCLUSIVE_HL_COLOR : PREREQ_LINE_COLOR;
   const finalStyle = {
     ...style,
     stroke: style?.stroke || edgeColor,
