@@ -306,7 +306,7 @@ function buildFocusConditions(focuses: FocusNode[]): Map<string, FocusConditionI
   const result = new Map<string, FocusConditionInfo>();
   const byId = new Map(focuses.map((f) => [f.id, f]));
 
-  // Build parent map
+  // 构建父节点映射：用于拓扑排序（仅用于 BFS 入队）
   const parents = new Map<string, Set<string>>();
   for (const f of focuses) {
     if (!parents.has(f.id)) parents.set(f.id, new Set());
@@ -317,7 +317,7 @@ function buildFocusConditions(focuses: FocusNode[]): Map<string, FocusConditionI
     }
   }
 
-  // Topological sort (BFS from roots)
+  // 拓扑排序 BFS（从根节点开始）
   const visited = new Set<string>();
   const queue: string[] = [];
   for (const f of focuses) {
@@ -336,28 +336,57 @@ function buildFocusConditions(focuses: FocusNode[]): Map<string, FocusConditionI
 
     const ownTree = parseConditionTree(focus.allowBranch);
 
-    // Inherit from parents
-    const parentTrees: ConditionNode[] = [];
-    for (const pid of parents.get(id) || []) {
-      const pInfo = result.get(pid);
-      if (pInfo?.tree) parentTrees.push(pInfo.tree);
+    // 获取当前焦点的先决条件组（二维数组）
+    const prereqGroups: string[][] = focus.prerequisite || [];
+
+    // 为每个 OR 组构建条件节点
+    const groupNodes: ConditionNode[] = [];
+    for (const group of prereqGroups) {
+      if (group.length === 0) continue; // 空组视为 true，忽略
+
+      // 检查该组是否有父焦点无条件（即条件树为 null）
+      let hasUnconditionalParent = false;
+      const parentTrees: ConditionNode[] = [];
+
+      for (const pid of group) {
+        const pInfo = result.get(pid);
+        if (!pInfo || pInfo.tree === null) {
+          // 父焦点不存在或无条件，视为 true，该组整体为 true
+          hasUnconditionalParent = true;
+          break;
+        }
+        parentTrees.push(pInfo.tree);
+      }
+
+      if (hasUnconditionalParent) {
+        // 组内有一个无条件父焦点，整个组满足，无需添加节点
+        continue;
+      }
+
+      // 所有父焦点都有条件树，构建 OR 节点
+      if (parentTrees.length === 1) {
+        // 组内只有一个父焦点，直接使用该条件树
+        groupNodes.push(parentTrees[0]);
+      } else {
+        groupNodes.push({ type: "or", children: parentTrees });
+      }
     }
 
-    // Combine: own + inherited (AND)
+    // 组合：自身条件 + 所有先决条件组（AND）
     let combinedTree: ConditionNode | null = ownTree;
-    if (parentTrees.length > 0) {
-      const allTrees = ownTree ? [ownTree, ...parentTrees] : parentTrees;
-      if (allTrees.length === 1) {
-        combinedTree = allTrees[0];
+    if (groupNodes.length > 0) {
+      const allNodes = ownTree ? [ownTree, ...groupNodes] : groupNodes;
+      if (allNodes.length === 1) {
+        combinedTree = allNodes[0];
       } else {
-        combinedTree = { type: "and", children: allTrees };
+        combinedTree = { type: "and", children: allNodes };
       }
     }
 
     const atomics = extractAtomics(combinedTree);
     result.set(id, { tree: combinedTree, atomics });
 
-    // Enqueue children
+    // 将当前焦点的子节点入队
     for (const f2 of focuses) {
       for (const orGroup of f2.prerequisite || []) {
         if (orGroup.includes(id)) {
@@ -367,9 +396,10 @@ function buildFocusConditions(focuses: FocusNode[]): Map<string, FocusConditionI
     }
   }
 
-  // Handle any unvisited focuses (cycles)
+  // 处理循环依赖导致的未访问焦点
   for (const f of focuses) {
     if (!result.has(f.id)) {
+      // 回退：仅使用自身条件，不继承父节点
       const ownTree = parseConditionTree(f.allowBranch);
       result.set(f.id, { tree: ownTree, atomics: extractAtomics(ownTree) });
     }
