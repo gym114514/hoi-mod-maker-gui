@@ -306,7 +306,7 @@ function buildFocusConditions(focuses: FocusNode[]): Map<string, FocusConditionI
   const result = new Map<string, FocusConditionInfo>();
   const byId = new Map(focuses.map((f) => [f.id, f]));
 
-  // 构建父节点映射：用于拓扑排序（仅用于 BFS 入队）
+  // 构建父节点映射：用于拓扑排序
   const parents = new Map<string, Set<string>>();
   for (const f of focuses) {
     if (!parents.has(f.id)) parents.set(f.id, new Set());
@@ -317,14 +317,32 @@ function buildFocusConditions(focuses: FocusNode[]): Map<string, FocusConditionI
     }
   }
 
-  // 拓扑排序 BFS（从根节点开始）
-  const visited = new Set<string>();
+  // 构建子节点映射和入度表
+  const children = new Map<string, Set<string>>();
+  const indegree = new Map<string, number>();
+  for (const f of focuses) {
+    children.set(f.id, new Set());
+    indegree.set(f.id, 0);
+  }
+
+  for (const f of focuses) {
+    const parentSet = parents.get(f.id)!;
+    indegree.set(f.id, parentSet.size);
+    for (const pid of parentSet) {
+      if (!children.has(pid)) children.set(pid, new Set());
+      children.get(pid)!.add(f.id);
+    }
+  }
+
+  // Kahn 拓扑排序
   const queue: string[] = [];
   for (const f of focuses) {
-    if (!parents.has(f.id) || parents.get(f.id)!.size === 0) {
+    if (indegree.get(f.id) === 0) {
       queue.push(f.id);
     }
   }
+
+  const visited = new Set<string>();
 
   while (queue.length > 0) {
     const id = queue.shift()!;
@@ -386,11 +404,17 @@ function buildFocusConditions(focuses: FocusNode[]): Map<string, FocusConditionI
     const atomics = extractAtomics(combinedTree);
     result.set(id, { tree: combinedTree, atomics });
 
-    // 将当前焦点的子节点入队
-    for (const f2 of focuses) {
-      for (const orGroup of f2.prerequisite || []) {
-        if (orGroup.includes(id)) {
-          queue.push(f2.id);
+    // 更新子节点入度
+    const childSet = children.get(id);
+    if (childSet) {
+      for (const childId of childSet) {
+        const current = indegree.get(childId);
+        if (current !== undefined) {
+          const next = current - 1;
+          indegree.set(childId, next);
+          if (next === 0) {
+            queue.push(childId);
+          }
         }
       }
     }
