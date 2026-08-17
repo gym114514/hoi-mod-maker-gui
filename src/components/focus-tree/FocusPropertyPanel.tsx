@@ -1,6 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { FocusBlockEditor } from "./BlockEditor";
 import type { FocusNode } from "@/data/types";
+import { PREREQ_HL_COLORS } from "./treeConstants";
+import type { PickMode } from "./FocusTreeEditor";
 
 
 interface Props {
@@ -10,6 +12,8 @@ interface Props {
   onAddFocus?: (focus: FocusNode) => void;
   onClose: () => void;
   allFocusIds?: string[];
+  pickMode?: PickMode | null;
+  onRequestPick?: (mode: PickMode) => void;
 }
 
 interface IconEntry {
@@ -801,17 +805,15 @@ function AddFocusForm({ allFocusIds, onAdd, onCancel }: AddFocusFormProps) {
               </span>
             ))}
           </div>
-          <select
-            className="form-input"
+          <FocusIdField
             value=""
-            onChange={(e) => { if (e.target.value && !prerequisite.includes(e.target.value)) setPrerequisite((p) => [...p, e.target.value]); e.currentTarget.value = ""; }}
-            style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}
-          >
-            <option value="">+ 添加前置...</option>
-            {allFocusIds.filter((fid) => fid !== id && !prerequisite.includes(fid)).map((fid) => (
-              <option key={fid} value={fid}>{fid}</option>
-            ))}
-          </select>
+            onChange={(v) => {
+              if (v && !prerequisite.includes(v)) setPrerequisite((p) => [...p, v]);
+            }}
+            candidates={allFocusIds}
+            exclude={[id, ...prerequisite]}
+            placeholder="+ 输入/搜索前置国策…"
+          />
         </div>
 
         {/* Mutually Exclusive */}
@@ -819,20 +821,16 @@ function AddFocusForm({ allFocusIds, onAdd, onCancel }: AddFocusFormProps) {
           <label className="form-label">互斥国策</label>
           {mutuallyExclusive.map((mid, idx) => (
             <div key={idx} style={{ display: "flex", gap: 4, marginBottom: 4 }}>
-              <select
-                className="form-input"
+              <FocusIdField
                 value={mid}
-                onChange={(e) => {
-                  const n = [...mutuallyExclusive]; n[idx] = e.target.value;
-                  setMutuallyExclusive(n.filter((v) => v !== ""));
+                onChange={(v) => {
+                  const n = [...mutuallyExclusive]; n[idx] = v;
+                  setMutuallyExclusive(n.filter((x) => x !== ""));
                 }}
-                style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 11 }}
-              >
-                <option value="">-- 无 --</option>
-                {allFocusIds.filter((fid) => fid !== id).map((fid) => (
-                  <option key={fid} value={fid}>{fid}</option>
-                ))}
-              </select>
+                candidates={allFocusIds}
+                exclude={[id]}
+                clearable
+              />
               <button
                 type="button"
                 onClick={() => setMutuallyExclusive((m) => m.filter((_, i) => i !== idx))}
@@ -939,6 +937,198 @@ function AddFocusForm({ allFocusIds, onAdd, onCancel }: AddFocusFormProps) {
 
 // ---------- Main Component ----------
 
+/** 模糊匹配：大小写不敏感；query 按空白/下划线分段，每段都须为文本子串 */
+function fuzzyMatch(text: string, query: string): boolean {
+  const t = text.toLowerCase();
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  if (t.includes(q)) return true;
+  return q
+    .split(/[\s_]+/)
+    .filter(Boolean)
+    .every((tok) => t.includes(tok));
+}
+
+/**
+ * 国策 ID 选择输入：文本输入 + 模糊匹配候选下拉。
+ * value 始终显示在候选顶部（当前值可重新点选）；clearable 时提供"（无）"清除项。
+ * 键盘：↑/↓ 移动、Enter 选中、Esc 关闭。
+ */
+function FocusIdField({
+  value,
+  onChange,
+  candidates,
+  exclude = [],
+  placeholder = "",
+  clearable = false,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  candidates: string[];
+  exclude?: string[];
+  placeholder?: string;
+  clearable?: boolean;
+}) {
+  const [text, setText] = useState("");
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(-1);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+
+  const filtered = candidates.filter(
+    (id) => id !== value && !exclude.includes(id) && fuzzyMatch(id, text)
+  );
+  // 当前值固定在候选顶部，避免聚焦后找不到自己
+  const all = value ? [value, ...filtered] : filtered;
+
+  // 点击外部关闭
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  // 打开/过滤变化时重置键盘位置
+  useEffect(() => {
+    setActive(-1);
+  }, [open, text]);
+
+  // 列表滚动跟随键盘位置
+  useEffect(() => {
+    if (active >= 0 && listRef.current) {
+      const el = listRef.current.children[active] as HTMLElement | undefined;
+      el?.scrollIntoView({ block: "nearest" });
+    }
+  }, [active]);
+
+  const pick = (id: string) => {
+    onChange(id);
+    setText("");
+    setOpen(false);
+  };
+
+  return (
+    <div ref={rootRef} style={{ position: "relative", flex: 1 }}>
+      <input
+        className="form-input"
+        value={open ? text : value}
+        placeholder={placeholder}
+        style={{ fontFamily: "var(--font-mono)", fontSize: 11, width: "100%" }}
+        onFocus={() => setOpen(true)}
+        onChange={(e) => {
+          setText(e.target.value);
+          setOpen(true);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            setActive((a) => Math.min(a + 1, all.length - 1));
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            setActive((a) => Math.max(a - 1, -1));
+          } else if (e.key === "Enter") {
+            if (active >= 0 && all[active]) pick(all[active]);
+            else if (text.trim() && all.length > 0) pick(all[0]);
+          } else if (e.key === "Escape") {
+            setOpen(false);
+            setText("");
+          }
+        }}
+      />
+      {open && all.length > 0 && (
+        <ul
+          ref={listRef}
+          style={{
+            position: "absolute",
+            top: "100%",
+            left: 0,
+            right: 0,
+            zIndex: 30,
+            maxHeight: 200,
+            overflowY: "auto",
+            margin: 0,
+            padding: "2px 0",
+            listStyle: "none",
+            background: "#1e1e1e",
+            border: "1px solid #3d3d3d",
+            borderRadius: 4,
+            boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
+          }}
+        >
+          {clearable && value && (
+            <li
+              onMouseDown={(e) => {
+                e.preventDefault();
+                pick("");
+              }}
+              style={{
+                padding: "4px 8px",
+                fontSize: 11,
+                color: "#707070",
+                cursor: "pointer",
+              }}
+            >
+              （无）
+            </li>
+          )}
+          {all.map((id, i) => (
+            <li
+              key={id}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                pick(id);
+              }}
+              onMouseEnter={() => setActive(i)}
+              style={{
+                padding: "4px 8px",
+                fontSize: 11,
+                fontFamily: "var(--font-mono)",
+                color: id === value ? "#c9a227" : "#dbe7f5",
+                background: i === active ? "#2d3a4a" : undefined,
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {id === value ? "✓ " : ""}
+              {id}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** "从画布选择"按钮：进入拾取模式后画布点击节点即填充字段 */
+function PickButton({ active, onClick }: { active: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={active ? "点击画布选择节点，Esc/点击空白取消" : "从画布选择节点"}
+      style={{
+        fontSize: 11,
+        padding: "2px 8px",
+        background: active ? "#2d4a5a" : "#2d2d2d",
+        color: active ? "#7ad0e8" : "#a0a0a0",
+        border: active ? "1px solid #4a90d9" : "1px solid #3d3d3d",
+        borderRadius: 3,
+        cursor: "pointer",
+        whiteSpace: "nowrap",
+      }}
+    >
+      📌 {active ? "点击画布…" : "画布选择"}
+    </button>
+  );
+}
+
 export function FocusPropertyPanel({
   focus,
   onUpdate,
@@ -946,6 +1136,8 @@ export function FocusPropertyPanel({
   onAddFocus,
   onClose,
   allFocusIds = [],
+  pickMode = null,
+  onRequestPick,
 }: Props) {
   const [formData, setFormData] = useState<FocusNode | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
@@ -1213,13 +1405,20 @@ export function FocusPropertyPanel({
 
         {/* Relative Position */}
         <div className="form-group">
-          <label className="form-label">相对位置 ID</label>
-          <input
-            className="form-input"
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <label className="form-label">相对位置 ID</label>
+            <PickButton
+              active={pickMode?.type === "relativePositionId"}
+              onClick={() => onRequestPick?.({ type: "relativePositionId" })}
+            />
+          </div>
+          <FocusIdField
             value={formData.relativePositionId || ""}
-            onChange={(e) => handleChange("relativePositionId", e.target.value)}
-            placeholder="用于相对定位"
-            style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}
+            onChange={(v) => handleChange("relativePositionId", v || null)}
+            candidates={allFocusIds}
+            exclude={[formData.id]}
+            placeholder="输入或搜索国策 ID…"
+            clearable
           />
         </div>
 
@@ -1238,12 +1437,15 @@ export function FocusPropertyPanel({
             </div>
           )}
           
-          {(formData.prerequisite || []).map((group, groupIdx) => (
+          {(formData.prerequisite || []).map((group, groupIdx) => {
+            // 组色与画布关联高亮同源（treeConstants.PREREQ_HL_COLORS）
+            const groupColor = PREREQ_HL_COLORS[groupIdx % PREREQ_HL_COLORS.length];
+            return (
             <div
               key={groupIdx}
               style={{
-                background: "#2a2a2a",
-                border: "1px solid #3d3d3d",
+                background: `${groupColor}22`,
+                border: `1px solid ${groupColor}55`,
                 borderRadius: 4,
                 padding: 8,
                 marginBottom: 8,
@@ -1257,10 +1459,10 @@ export function FocusPropertyPanel({
                   alignItems: "center",
                   marginBottom: 6,
                   paddingBottom: 4,
-                  borderBottom: "1px solid #3d3d3d",
+                  borderBottom: `1px solid ${groupColor}44`,
                 }}
               >
-                <span style={{ fontSize: 11, color: "#4a90d9" }}>
+                <span style={{ fontSize: 11, color: groupColor, fontWeight: 600 }}>
                   组 {groupIdx + 1} {group.length > 1 ? "(OR)" : ""}
                 </span>
                 <button
@@ -1287,8 +1489,8 @@ export function FocusPropertyPanel({
                     style={{
                       fontSize: 10,
                       padding: "2px 6px",
-                      background: "#1a3a5a",
-                      color: "#7ab8e8",
+                      background: `${groupColor}1f`,
+                      color: groupColor,
                       borderRadius: 3,
                       display: "flex",
                       alignItems: "center",
@@ -1301,7 +1503,7 @@ export function FocusPropertyPanel({
                       style={{
                         background: "transparent",
                         border: "none",
-                        color: "#7ab8e8",
+                        color: groupColor,
                         fontSize: 10,
                         cursor: "pointer",
                         padding: 0,
@@ -1314,28 +1516,24 @@ export function FocusPropertyPanel({
               </div>
               
               {/* Add focus to group */}
-              <select
-                className="form-input"
-                value=""
-                onChange={(e) => {
-                  if (e.target.value) {
-                    addFocusToGroup(groupIdx, e.target.value);
-                    e.target.value = "";
-                  }
-                }}
-                style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}
-              >
-                <option value="">+ 添加国策到此组...</option>
-                {allFocusIds
-                  .filter((id) => id !== formData.id && !group.includes(id))
-                  .map((id) => (
-                    <option key={id} value={id}>
-                      {id}
-                    </option>
-                  ))}
-              </select>
+              <div style={{ display: "flex", gap: 4 }}>
+                <FocusIdField
+                  value=""
+                  onChange={(v) => {
+                    if (v) addFocusToGroup(groupIdx, v);
+                  }}
+                  candidates={allFocusIds}
+                  exclude={[formData.id, ...group]}
+                  placeholder="+ 输入/搜索国策…"
+                />
+                <PickButton
+                  active={pickMode?.type === "prereq" && pickMode.groupIdx === groupIdx}
+                  onClick={() => onRequestPick?.({ type: "prereq", groupIdx })}
+                />
+              </div>
             </div>
-          ))}
+            );
+          })}
           
           <button
             onClick={addPrerequisiteGroup}
@@ -1356,34 +1554,30 @@ export function FocusPropertyPanel({
 
         {/* Mutually Exclusive */}
         <div className="form-group">
-          <label className="form-label">互斥国策</label>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <label className="form-label">互斥国策</label>
+            <PickButton
+              active={pickMode?.type === "exclusive"}
+              onClick={() => onRequestPick?.({ type: "exclusive" })}
+            />
+          </div>
           {(formData.mutuallyExclusive || []).map((exId, idx) => (
             <div key={idx} style={{ display: "flex", gap: 4, marginBottom: 4 }}>
-              <select
-                className="form-input"
+              <FocusIdField
                 value={exId}
-                onChange={(e) => {
+                onChange={(v) => {
                   const newEx = [...(formData.mutuallyExclusive || [])];
-                  newEx[idx] = e.target.value;
-                  handleMutualExclusiveChange(newEx);
+                  newEx[idx] = v;
+                  handleMutualExclusiveChange(newEx.filter((x) => x !== ""));
                 }}
-                style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 11 }}
-              >
-                <option value="">-- 无 --</option>
-                {allFocusIds
-                  .filter((id) => id !== formData.id)
-                  .filter((id) => {
-                    // Can't be mutually exclusive with a prerequisite
-                    const prereqIds = (formData.prerequisite || []).flat();
-                    if (prereqIds.includes(id)) return false;
-                    return true;
-                  })
-                  .map((id) => (
-                    <option key={id} value={id}>
-                      {id}
-                    </option>
-                  ))}
-              </select>
+                candidates={allFocusIds.filter((id) => {
+                  // Can't be mutually exclusive with a prerequisite
+                  const prereqIds = (formData.prerequisite || []).flat();
+                  return !prereqIds.includes(id);
+                })}
+                exclude={[formData.id]}
+                clearable
+              />
               <button
                 onClick={() => {
                   const newEx = (formData.mutuallyExclusive || []).filter(
