@@ -272,7 +272,7 @@ fn parse_offset_block(lines: &[&str], start_idx: &mut usize) -> Option<FocusOffs
     let mut trigger: Option<String> = None;
     
     // Simple parse: extract key = value pairs
-    let mut remaining = combined.as_str();
+    let remaining = combined.as_str();
     // Extract id
     if let Some(pos) = remaining.find("id") {
         let after = &remaining[pos..];
@@ -1052,13 +1052,152 @@ Getting Started:
 }
 
 // ---------- LSP-like Commands ----------
+// 数据源：src/data/entries.json（与前端只读积木编辑器共用同一份知识库），编译期内嵌
+
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
+#[derive(serde::Deserialize)]
+struct EntryJson {
+    #[serde(default)]
+    desc_zh: Option<String>,
+    #[serde(default)]
+    scopes: Option<Vec<String>>,
+    // kind/name/md/var_scope/params_guess 等字段暂不使用
+}
+
+#[derive(Default)]
+struct KnowledgeBase {
+    effect: HashMap<String, EntryJson>,
+    trigger: HashMap<String, EntryJson>,
+    variable: HashMap<String, EntryJson>,
+}
+
+fn knowledge_base() -> &'static KnowledgeBase {
+    static KB: OnceLock<KnowledgeBase> = OnceLock::new();
+    KB.get_or_init(|| {
+        #[derive(serde::Deserialize)]
+        struct Raw {
+            #[serde(default)]
+            effect: HashMap<String, EntryJson>,
+            #[serde(default)]
+            trigger: HashMap<String, EntryJson>,
+            #[serde(default)]
+            variable: HashMap<String, EntryJson>,
+        }
+        let raw: Raw = serde_json::from_str(include_str!("../../src/data/entries.json"))
+            .expect("内置 entries.json 解析失败");
+        KnowledgeBase {
+            effect: raw.effect,
+            trigger: raw.trigger,
+            variable: raw.variable,
+        }
+    })
+}
+
+/// 按 key 查知识库，优先级 effect → trigger → variable，带大小写兜底。
+/// 返回 (条目, 类别名)。
+fn lookup_entry<'a>(kb: &'a KnowledgeBase, key: &'a str) -> Option<(&'a EntryJson, &'static str)> {
+    if let Some(e) = kb.effect.get(key) {
+        return Some((e, "effect"));
+    }
+    if let Some(e) = kb.trigger.get(key) {
+        return Some((e, "trigger"));
+    }
+    if let Some(e) = kb.variable.get(key) {
+        return Some((e, "variable"));
+    }
+    for (table, kind) in [
+        (&kb.effect, "effect"),
+        (&kb.trigger, "trigger"),
+        (&kb.variable, "variable"),
+    ] {
+        if let Some((_, e)) = table
+            .iter()
+            .find(|(k, _)| k.to_lowercase() == key.to_lowercase())
+        {
+            return Some((e, kind));
+        }
+    }
+    None
+}
+
+fn scopes_suffix(scopes: &Option<Vec<String>>) -> String {
+    match scopes {
+        Some(s) if !s.is_empty() => format!(" · {}", s.join(", ")),
+        _ => String::new(),
+    }
+}
+
+// entries.json 不覆盖 focus 结构字段 —— 结构词表与 hover 文档（与补全词表对齐）
+const FOCUS_FIELDS: &[&str] = &[
+    "id", "icon", "x", "y", "cost", "prerequisite", "mutually_exclusive",
+    "relative_position_id", "available", "bypass", "cancel", "completion_reward",
+    "select_effect", "hidden_effect", "search_filters", "ai_will_do",
+    "cancel_if_invalid", "continue_if_invalid", "available_if_capitulated",
+    "inner_circle", "continuous", "dynamic", "will_lead_to_war_with",
+    "allow_branch",
+];
+const TREE_FIELDS: &[&str] = &[
+    "focus", "focus_tree", "country", "focus_tree_id", "default",
+    "shared_focus", "inner_circle_focus",
+];
+
+fn struct_docs() -> &'static HashMap<&'static str, &'static str> {
+    static DOCS: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+    DOCS.get_or_init(|| {
+        HashMap::from([
+            ("id", "**id** = xxx\n\n国策唯一 ID（本文件内全局唯一）"),
+            ("icon", "**icon** = GFX_focus_xxx\n\n国策图标"),
+            ("x", "**x** = N\n\n国策在树中的横坐标"),
+            ("y", "**y** = N\n\n国策在树中的纵坐标"),
+            ("cost", "**cost** = N\n\n完成该国策所需政治点数（默认 1）"),
+            ("prerequisite", "**prerequisite** = { focus = xxx }\n\n前置国策 (AND 关系)"),
+            ("mutually_exclusive", "**mutually_exclusive** = { focus = xxx }\n\n互斥国策"),
+            ("relative_position_id", "**relative_position_id** = xxx\n\n相对定位基准国策"),
+            ("available", "**available** = { ... }\n\n国策解锁条件"),
+            ("bypass", "**bypass** = { ... }\n\n跳过国策的条件"),
+            ("cancel", "**cancel** = { ... }\n\n取消国策的效果"),
+            ("completion_reward", "**completion_reward** = { ... }\n\n国策完成时执行的效果"),
+            ("select_effect", "**select_effect** = { ... }\n\n选择国策时执行的效果"),
+            ("hidden_effect", "**hidden_effect** = { ... }\n\n隐藏效果（不显示在国策面板）"),
+            ("search_filters", "**search_filters** = { FOCUS_FILTER_XXX }\n\n搜索分类标签"),
+            ("ai_will_do", "**ai_will_do** = { factor = N }\n\nAI 选择该国策的权重"),
+            ("cancel_if_invalid", "**cancel_if_invalid** = yes/no\n\n条件失效自动取消"),
+            ("continue_if_invalid", "**continue_if_invalid** = yes/no\n\n条件失效后继续执行"),
+            ("available_if_capitulated", "**available_if_capitulated** = yes/no\n\n即使已投降仍可用"),
+            ("inner_circle", "**inner_circle** = yes/no\n\n内环国策"),
+            ("continuous", "**continuous** = yes/no\n\n连续焦点（可持续激活）"),
+            ("dynamic", "**dynamic** = yes/no\n\n动态国策（AI 自动生成）"),
+            ("will_lead_to_war_with", "**will_lead_to_war_with** = TAG\n\n完成国策将与该国开战"),
+            ("allow_branch", "**allow_branch** = { ... }\n\n允许生成分支的条件"),
+            ("focus_tree", "**focus_tree** = { ... }\n\n国策树定义块"),
+            ("focus", "**focus** = { ... }\n\n单个国策定义块"),
+            ("country", "**country** = { factor = N }\n\n国策树归属国家（factor 为权重）"),
+            ("focus_tree_id", "**focus_tree_id** = xxx\n\n国策树 ID"),
+            ("default", "**default** = yes/no\n\n是否默认国策树"),
+            ("shared_focus", "**shared_focus** = xxx\n\n共享国策（引用其他树的国策）"),
+            ("inner_circle_focus", "**inner_circle_focus** = xxx\n\n内环国策引用"),
+        ])
+    })
+}
 
 #[derive(serde::Serialize)]
 struct CompletionItem {
     label: String,
+    /// "effect" | "trigger" | "variable" | "property" | "class"
     kind: String,
     detail: String,
     documentation: String,
+}
+
+fn completion_item(name: &str, kind: &str, detail: &str, doc: &str) -> CompletionItem {
+    CompletionItem {
+        label: name.to_string(),
+        kind: kind.to_string(),
+        detail: detail.to_string(),
+        documentation: doc.to_string(),
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -1074,109 +1213,86 @@ fn get_completions(content: String, line: usize, column: usize) -> Result<Vec<Co
     if line == 0 || line > lines.len() {
         return Ok(vec![]);
     }
+    println!("line: {}, column: {}", line, column);
     let line_content = lines[line - 1];
-    let col = column.saturating_sub(1).min(line_content.len());
-    let prefix = &line_content[..col];
-
-    let mut items = Vec::new();
-
-    // Detect context: are we inside a completion_reward/available/bypass block?
-    let trimmed = prefix.trim_start();
-
-    // If line starts with whitespace and we're inside a block, suggest effects/triggers
+    // column: Monaco 传入 1‑based 逻辑字符列，转为 0‑based 字符索引
+    let char_pos = column.saturating_sub(1);
+    let byte_offset = line_content
+        .char_indices()
+        .nth(char_pos)
+        .map(|(b, _)| b)
+        .unwrap_or(line_content.len());
+    let before_cursor = &line_content[..byte_offset];
     let indent = line_content.len() - line_content.trim_start().len();
+    let typed = before_cursor.trim_start().split_whitespace().next().unwrap_or("");
+
+    println!("typed: {}", typed);
+
+    let kb = knowledge_base();
+    let mut items: Vec<CompletionItem> = Vec::new();
 
     if indent >= 8 {
-        // Deep inside a block — suggest effects
-        let effects = [
-            "add_political_power", "add_stability", "add_war_support",
-            "add_manpower", "army_experience", "navy_experience", "air_experience",
-            "add_research_slot", "add_tech_bonus", "add_doctrine_cost_reduction",
-            "add_ideas", "remove_ideas", "swap_ideas",
-            "set_politics", "set_rule", "set_country_flag", "clr_country_flag",
-            "create_wargoal", "declare_war_on", "add_threat",
-            "puppet", "annex_country", "release_puppet",
-            "add_building_construction", "add_extra_state_shared_building_slots",
-            "set_technology", "add_offsite_building", "add_resource",
-            "random_owned_controlled_state", "every_owned_state",
-            "if", "limit", "random_list",
-            "custom_effect_tooltip", "custom_trigger_tooltip",
-            "add_fuel", "add_equipment_to_stockpile",
-            "transfer_state", "add_state_core", "remove_state_core",
-            "add_state_claim", "remove_state_claim",
-            "add_country_leader_trait", "remove_country_leader_trait",
-        ];
-        for eff in &effects {
-            if eff.starts_with(trimmed.split_whitespace().next().unwrap_or("")) {
-                items.push(CompletionItem {
-                    label: eff.to_string(),
-                    kind: "function".to_string(),
-                    detail: "effect".to_string(),
-                    documentation: format!("HOI4 effect: {}", eff),
-                });
+        // 效果/条件块内（available/completion_reward 等）：全量 entries 知识库
+        for (kind, table) in [
+            ("effect", &kb.effect),
+            ("trigger", &kb.trigger),
+            ("variable", &kb.variable),
+        ] {
+            for (name, e) in table.iter() {
+                if name.starts_with(typed) {
+                    items.push(completion_item(
+                        name,
+                        kind,
+                        &format!("{}{}", kind, scopes_suffix(&e.scopes)),
+                        e.desc_zh.as_deref().unwrap_or(""),
+                    ));
+                }
             }
         }
     } else if indent >= 4 {
-        // Focus-level fields
-        let fields = [
-            "id", "icon", "x", "y", "cost", "prerequisite", "mutually_exclusive",
-            "relative_position_id", "available", "bypass", "cancel",
-            "completion_reward", "search_filters", "ai_will_do",
-            "cancel_if_invalid", "continue_if_invalid", "available_if_capitulated",
-            "inner_circle", "continuous", "will_lead_to_war_with",
-        ];
-        for f in &fields {
-            if f.starts_with(trimmed.split_whitespace().next().unwrap_or("")) {
-                items.push(CompletionItem {
-                    label: f.to_string(),
-                    kind: "property".to_string(),
-                    detail: "focus field".to_string(),
-                    documentation: format!("Focus tree field: {}", f),
-                });
+        // focus 字段级
+        for f in FOCUS_FIELDS {
+            if f.starts_with(typed) {
+                items.push(completion_item(
+                    f,
+                    "property",
+                    "focus field",
+                    struct_docs().get(*f).copied().unwrap_or(""),
+                ));
             }
         }
     } else {
-        // Tree-level
-        let tree_fields = ["focus", "focus_tree", "country", "focus_tree_id", "default", "shared_focus", "inner_circle_focus"];
-        for f in &tree_fields {
-            if f.starts_with(trimmed.split_whitespace().next().unwrap_or("")) {
-                items.push(CompletionItem {
-                    label: f.to_string(),
-                    kind: "class".to_string(),
-                    detail: "tree element".to_string(),
-                    documentation: format!("Tree-level element: {}", f),
-                });
+        // tree 级
+        for f in TREE_FIELDS {
+            if f.starts_with(typed) {
+                items.push(completion_item(
+                    f,
+                    "class",
+                    "tree element",
+                    struct_docs().get(*f).copied().unwrap_or(""),
+                ));
             }
         }
     }
 
-    // Limit results
-    items.truncate(50);
+    // 限制数量，避免下拉过长
+    items.truncate(200);
     Ok(items)
 }
 
 #[tauri::command]
-fn get_hover_info(word: String, content: String, line: usize, column: usize) -> Result<Option<String>, AppError> {
-    let _ = (content, line, column);
-
-    let docs: std::collections::HashMap<&str, &str> = [
-        ("add_political_power", "**add_political_power** = N\n\n增加 N 点政治点数"),
-        ("add_stability", "**add_stability** = 0.1\n\n增加稳定度 (0~1)"),
-        ("add_war_support", "**add_war_support** = 0.1\n\n增加战争支持度 (0~1)"),
-        ("add_manpower", "**add_manpower** = 10000\n\n增加人力"),
-        ("army_experience", "**army_experience** = 25\n\n增加陆军经验"),
-        ("add_ideas", "**add_ideas** = idea_name\n\n添加国家精神"),
-        ("completion_reward", "**completion_reward** = { ... }\n\n国策完成时执行的效果"),
-        ("available", "**available** = { ... }\n\n国策解锁条件"),
-        ("prerequisite", "**prerequisite** = { focus = xxx }\n\n前置国策 (AND 关系)"),
-        ("mutually_exclusive", "**mutually_exclusive** = { focus = xxx }\n\n互斥国策"),
-        ("relative_position_id", "**relative_position_id** = xxx\n\n相对定位基准"),
-        ("search_filters", "**search_filters** = { FOCUS_FILTER_XXX }\n\n搜索分类标签"),
-        ("cancel_if_invalid", "**cancel_if_invalid** = yes/no\n\n条件失效自动取消"),
-        ("continuous", "**continuous** = yes/no\n\n连续焦点"),
-    ].iter().cloned().collect();
-
-    Ok(docs.get(word.as_str()).map(|s| s.to_string()))
+fn get_hover_info(word: String) -> Result<Option<String>, AppError> {
+    let kb = knowledge_base();
+    // entries 知识库优先（effect/trigger/variable），focus 结构字段兜底
+    if let Some((entry, kind)) = lookup_entry(kb, &word) {
+        let scopes = scopes_suffix(&entry.scopes);
+        let desc = entry.desc_zh.as_deref().unwrap_or("");
+        return Ok(Some(format!("**{}** · {}{}\n\n{}", word, kind, scopes, desc)));
+    }
+    if let Some(doc) = struct_docs().get(word.as_str()) {
+        return Ok(Some((*doc).to_string()));
+    }
+    Ok(None)
 }
 
 #[tauri::command]

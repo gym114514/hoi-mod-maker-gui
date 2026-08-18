@@ -94,46 +94,88 @@ const HOI4_MONARCH: Record<string, unknown> = {
   },
 };
 
-// ============ Completion & Hover Providers ============
+// ============ Completion & Hover Providers（Rust LSP 查询 entries.json 知识库） ============
 
-interface CompletionItem { label: string; kind: number; detail: string; insertText: string; }
+interface CompletionItem {
+  label: string;
+  /** "effect" | "trigger" | "variable" | "property" | "class" */
+  kind: string;
+  detail: string;
+  documentation: string;
+}
 
-const HOI4_COMPLETION_PROVIDER = {
-  provideCompletionItems: async (model: { getValue: () => string; getLineContent: (n: number) => string }, position: { lineNumber: number; column: number }) => {
-    try {
-      const completions = await invoke<CompletionItem[]>("get_completions", {
-        content: model.getValue(), line: position.lineNumber, column: position.column,
-      });
-      return {
-        suggestions: completions.map((c) => ({
-          label: c.label, kind: c.kind, detail: c.detail, insertText: c.insertText,
-          range: { startLineNumber: position.lineNumber, startColumn: position.column, endLineNumber: position.lineNumber, endColumn: position.column },
-        })),
-      };
-    } catch { return { suggestions: [] }; }
-  },
-};
 
-const HOI4_HOVER_PROVIDER = {
-  provideHover: async (model: { getValue: () => string; getWordAtPosition: (p: { lineNumber: number; column: number }) => { word: string; startColumn: number; endColumn: number } | null }, position: { lineNumber: number; column: number }) => {
-    try {
-      const word = model.getWordAtPosition(position);
-      if (!word) return null;
-      const info = await invoke<string | null>("get_hover_info", {
-        word: word.word, content: model.getValue(), line: position.lineNumber, column: position.column,
-      });
-      if (!info) return null;
-      return {
-        range: { startLineNumber: position.lineNumber, startColumn: word.startColumn, endLineNumber: position.lineNumber, endColumn: word.endColumn },
-        contents: [{ value: info }],
-      };
-    } catch { return null; }
-  },
-};
+/** 工厂：闭包捕获 monaco 实例，把 Rust 返回的类别字符串映射为 CompletionItemKind */
+function makeCompletionProvider(monaco: Parameters<OnMount>[1]) {
+  const KIND_MAP: Record<string, number> = {
+    effect: monaco.languages.CompletionItemKind.Function,
+    trigger: monaco.languages.CompletionItemKind.Keyword,
+    variable: monaco.languages.CompletionItemKind.Variable,
+    property: monaco.languages.CompletionItemKind.Property,
+    class: monaco.languages.CompletionItemKind.Class,
+  };
+  return {
+    provideCompletionItems: async (
+      model: { getValue: () => string; getWordUntilPosition: (p: { lineNumber: number; column: number }) => { startColumn: number; endColumn: number } },
+      position: { lineNumber: number; column: number },
+    ) => {
+      console.log("[completion] provider called", position.lineNumber, position.column);
+      try {
+        const completions = await invoke<CompletionItem[]>("get_completions", {
+          content: model.getValue(), line: position.lineNumber, column: position.column,
+        });
+        console.log("[completion] rust ok:", completions.length);
+        // range 必须覆盖光标前整个 token：
+        // 若起点固定为 position.column，Monaco 接受选中项时只替换“打开补全时”的前缀，
+        // 本地过滤阶段继续输入的字符会残留在结果前。
+        const word = model.getWordUntilPosition(position);
+        const range = {
+          startLineNumber: position.lineNumber, startColumn: word.startColumn,
+          endLineNumber: position.lineNumber, endColumn: word.endColumn,
+        };
+        return {
+          suggestions: completions.map((c) => ({
+            label: c.label,
+            kind: KIND_MAP[c.kind] ?? monaco.languages.CompletionItemKind.Function,
+            detail: c.detail,
+            documentation: c.documentation,
+            insertText: c.label,
+            range,
+          })),
+        };
+      } catch (e) {
+        // 后端命令缺失（Rust 改动未重启）/ invoke 异常都会走到这里
+        console.error("[completion] invoke failed:", e);
+        return { suggestions: [] };
+      }
+    },
+  };
+}
+
+function makeHoverProvider() {
+  return {
+    provideHover: async (model: { getWordAtPosition: (p: { lineNumber: number; column: number }) => { word: string; startColumn: number; endColumn: number } | null }, position: { lineNumber: number; column: number }) => {
+      try {
+        const word = model.getWordAtPosition(position);
+        if (!word) return null;
+        const info = await invoke<string | null>("get_hover_info", { word: word.word });
+        if (!info) return null;
+        return {
+          range: {
+            startLineNumber: position.lineNumber, startColumn: word.startColumn,
+            endLineNumber: position.lineNumber, endColumn: word.endColumn,
+          },
+          contents: [{ value: info }],
+        };
+      } catch { return null; }
+    },
+  };
+}
 
 // ============ CodePanel Component ============
 
 export function CodePanel() {
+  console.log(1);
   const activeFile = useProjectStore((s) => s.activeFile);
   const updateFileContent = useProjectStore((s) => s.updateFileContent);
   const goToLine = useEditorUIStore((s) => s.goToLine);
@@ -144,12 +186,16 @@ export function CodePanel() {
   const handleMount: OnMount = useCallback((editorInstance, monaco) => {
     editorRef.current = editorInstance;
 
+    console.log(monaco.languages.getLanguages());
     // Register HOI4 language
     if (!monaco.languages.getLanguages().some((l: { id: string }) => l.id === "hoi4")) {
       monaco.languages.register({ id: "hoi4" });
+      monaco.languages.setLanguageConfiguration("hoi4", {
+        wordPattern: /[a-zA-Z_][a-zA-Z0-9_]*/,
+      });
       monaco.languages.setMonarchTokensProvider("hoi4", HOI4_MONARCH as any);
-      monaco.languages.registerCompletionItemProvider("hoi4", HOI4_COMPLETION_PROVIDER as any);
-      monaco.languages.registerHoverProvider("hoi4", HOI4_HOVER_PROVIDER as any);
+      monaco.languages.registerCompletionItemProvider("hoi4", makeCompletionProvider(monaco) as any);
+      monaco.languages.registerHoverProvider("hoi4", makeHoverProvider() as any);
     }
 
     // Ctrl+S: validation + auto-save to tmp
@@ -230,6 +276,8 @@ export function CodePanel() {
           glyphMargin: true,
           folding: true,
           bracketPairColorization: { enabled: true },
+          // 只显示 provider 返回的建议，不混入文档内已有词（便于定位 provider 问题）
+          suggest: { showWords: false },
         }}
         loading={<div style={{ padding: 20, color: "#888" }}>加载编辑器...</div>}
       />
