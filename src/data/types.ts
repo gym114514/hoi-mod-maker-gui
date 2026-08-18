@@ -54,6 +54,11 @@ export interface BlockInstance {
   params: Record<string, string>;
   children?: BlockInstance[];
   slots?: Record<string, BlockInstance[]>;
+  // 只读 dump 积木元数据（与 BlockEditor.tsx 保持一致）
+  readOnly?: boolean;
+  kind?: "effect" | "trigger" | "variable" | "raw";
+  descZh?: string;
+  codeText?: string;
 }
 
 export interface FocusNode {

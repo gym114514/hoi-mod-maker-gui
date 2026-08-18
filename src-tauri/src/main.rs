@@ -618,6 +618,13 @@ fn parse_file(path: String) -> Result<String, AppError> {
     }
 }
 
+/// 解析一段任意 HOI4 代码字符串为 AST（供只读积木渲染等前端用途）。
+/// 复用完整版 parser，支持比较运算符 / 作用域引用 / 数组块 / 数字 key。
+#[tauri::command]
+fn parse_code_ast(code: String) -> Result<parser::Hoi4Ast, AppError> {
+    parser::parse_hoi4_file(&code, "<code>")
+}
+
 #[tauri::command]
 fn parse_focus_tree_cmd(path: String) -> Result<String, AppError> {
     println!("[RUST] parse_focus_tree_cmd: {}", path);
@@ -1392,6 +1399,7 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             parse_file,
+            parse_code_ast,
             parse_focus_tree_cmd,
             parse_ideas_cmd,
             validate_file,

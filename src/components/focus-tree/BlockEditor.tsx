@@ -1,5 +1,6 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import type { FocusNode } from "@/data/types";
+import { lookupEntry, parseCodeToBlocks } from "@/data/blockMatcher";
 
 // ============ Block Definitions ============
 
@@ -649,6 +650,15 @@ export interface BlockInstance {
   params: Record<string, string>;
   children?: BlockInstance[];
   slots?: Record<string, BlockInstance[]>;
+  // ---- 只读 dump 积木元数据（新旧合并：旧库匹配不到时用 dump 兜底渲染） ----
+  /** 是否只读展示（由 dump 兜底生成，不可编辑） */
+  readOnly?: boolean;
+  /** dump 分类：effect/trigger/variable/raw（决定颜色/图标） */
+  kind?: "effect" | "trigger" | "variable" | "raw";
+  /** dump 的中文说明（tooltip 展示） */
+  descZh?: string;
+  /** 只读展示的代码文本（`key = value` / 整条语句） */
+  codeText?: string;
 }
 
 let instanceCounter = 0;
@@ -691,13 +701,37 @@ function consolidateLines(code: string): string[] {
   return result;
 }
 
+// 提取一行语句的 leading key（`key = value` / `key > value` / `key = { ... }`）
+function leadingKey(line: string): string | null {
+  const m = line.match(/^([A-Za-z0-9_:.-]+)\s*(?:[=<>]|\{)/);
+  return m ? m[1] : null;
+}
+
+// 用 dump 兜底解析单行：旧库匹配不到时，若 leading key 在 entries.json 命中，
+// 生成只读积木（带 desc_zh）。命中返回实例，未命中返回 null。
+function parseLineWithDump(line: string): BlockInstance | null {
+  const key = leadingKey(line);
+  if (!key) return null;
+  const hit = lookupEntry(key);
+  if (!hit) return null;
+  return {
+    id: newInstanceId(),
+    defId: key,
+    params: {},
+    readOnly: true,
+    kind: hit.kind,
+    descZh: hit.entry.desc_zh,
+    codeText: line,
+  };
+}
+
 function parseCodeToChildren(code: string): BlockInstance[] {
   if (!code.trim()) return [];
   const lines = consolidateLines(code);
   const children: BlockInstance[] = [];
 
   for (const line of lines) {
-    // Try to match each block definition
+    // 1) 优先匹配旧可编辑积木库
     let matched = false;
     for (const def of BLOCK_LIBRARY) {
       if (def.isContainer) continue; // skip structure containers
@@ -709,10 +743,17 @@ function parseCodeToChildren(code: string): BlockInstance[] {
         break;
       }
     }
-    if (!matched) {
-      // Unknown code — wrap as raw_text block to preserve it
-      children.push({ id: newInstanceId(), defId: "raw_text", params: { code: line } });
+    if (matched) continue;
+
+    // 2) 旧库匹配不到 → 用 dump 兜底解析渲染（只读积木，风格统一）
+    const dumpBlock = parseLineWithDump(line);
+    if (dumpBlock) {
+      children.push(dumpBlock);
+      continue;
     }
+
+    // 3) 兜底：原始代码块
+    children.push({ id: newInstanceId(), defId: "raw_text", params: { code: line } });
   }
   return children;
 }
@@ -865,12 +906,49 @@ function VisualBlock({
   locked?: boolean;
 }) {
   const def = BLOCK_LIBRARY.find((b) => b.id === block.defId);
-  if (!def) return null;
   const [collapsed, setCollapsed] = useState(false);
 
   const handleParamChange = (key: string, value: string) => {
     onUpdate(block.id, { params: { ...block.params, [key]: value } });
   };
+
+  // ---- 只读 dump 积木（由 Rust AST + entries.json 递归解析出的嵌套积木）----
+  if (block.readOnly) {
+    const kindStyle: Record<string, { color: string; icon: string; label: string }> = {
+      effect: { color: "#e67e22", icon: "⚡", label: "效果" },
+      trigger: { color: "#3498db", icon: "🔍", label: "条件" },
+      variable: { color: "#9b59b6", icon: "📊", label: "变量" },
+      raw: { color: "#888888", icon: "📄", label: "原始代码" },
+    };
+    const st = kindStyle[block.kind || "raw"] || kindStyle.raw;
+    const kids = block.children || [];
+    const hasKids = kids.length > 0;
+    return (
+      <div style={{ marginLeft: depth > 0 ? 12 : 0, marginBottom: 4, borderLeft: `3px solid ${st.color}`, background: `${st.color}11`, borderRadius: "0 6px 6px 0", overflow: "hidden" }}>
+        <div
+          title={block.descZh || "未在数据库中识别该脚本关键字"}
+          onClick={() => hasKids && setCollapsed(!collapsed)}
+          style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 8px", background: `${st.color}22`, cursor: hasKids ? "pointer" : "default", userSelect: "none", fontFamily: "var(--font-mono)" }}
+        >
+          {hasKids && (
+            <span style={{ fontSize: 8, color: st.color, display: "inline-block", transition: "transform 0.15s", transform: collapsed ? "rotate(-90deg)" : "rotate(0deg)" }}>▼</span>
+          )}
+          <span style={{ fontSize: 13 }}>{st.icon}</span>
+          <span style={{ fontSize: 11, fontWeight: 600, color: st.color, flexShrink: 0 }}>{st.label}</span>
+          <span style={{ flex: 1, fontSize: 11, color: "#ddd", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{block.codeText || block.defId}</span>
+        </div>
+        {hasKids && !collapsed && (
+          <div style={{ padding: "6px 8px" }}>
+            {kids.map((child) => (
+              <VisualBlock key={child.id} block={child} onUpdate={onUpdate} onDelete={onDelete} onAddSlotChild={onAddSlotChild} depth={depth + 1} />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (!def) return null;
 
   return (
     <div style={{ marginLeft: depth > 0 ? 12 : 0, marginBottom: 4, borderLeft: `3px solid ${def.color}`, background: `${def.color}11`, borderRadius: "0 6px 6px 0", overflow: "hidden" }}>
@@ -1253,6 +1331,133 @@ export function FocusBlockEditor({ focus, onUpdate }: FocusBlockEditorProps) {
           {codePreview}
         </pre>
       </details>
+    </div>
+  );
+}
+
+// ============ 只读积木渲染（基于 dump + Rust AST 的嵌套积木树） ============
+
+// 五个国策结构容器：字段 → 容器展示元数据（与旧 FocusBlockEditor 的骨架对齐）
+const FOCUS_CONTAINERS: {
+  field: keyof Pick<FocusNode, "completionReward" | "available" | "bypass" | "selectEffect" | "hiddenEffect">;
+  label: string;
+  icon: string;
+  color: string;
+}[] = [
+  { field: "completionReward", label: "完成奖励 completion_reward", icon: "🎁", color: "#c9a227" },
+  { field: "available", label: "可用条件 available", icon: "🔍", color: "#c9a227" },
+  { field: "bypass", label: "跳过条件 bypass", icon: "⏭️", color: "#c9a227" },
+  { field: "selectEffect", label: "选择效果 select_effect", icon: "🎯", color: "#c9a227" },
+  { field: "hiddenEffect", label: "隐藏效果 hidden_effect", icon: "🫥", color: "#c9a227" },
+];
+
+export function FocusReadOnlyEditor({ focus }: { focus: FocusNode }) {
+  const [loaded, setLoaded] = useState<Record<string, BlockInstance[]>>({});
+  const [loading, setLoading] = useState(true);
+  const current = useRef(focus.id);
+
+  async function load() {
+    setLoading(true);
+    const result: Record<string, BlockInstance[]> = {};
+    for (const c of FOCUS_CONTAINERS) {
+      const code = focus[c.field];
+      if (!code || !code.trim()) {
+        result[c.field] = [];
+        continue;
+      }
+      try {
+        result[c.field] = await parseCodeToBlocks(code);
+      } catch (e) {
+        // 解析失败：该字段整体按原始代码展示
+        result[c.field] = [
+          {
+            id: newInstanceId(),
+            defId: "raw_text",
+            params: {},
+            readOnly: true,
+            kind: "raw",
+            codeText: code,
+          },
+        ];
+      }
+    }
+    if (current.current === focus.id) {
+      setLoaded(result);
+      setLoading(false);
+    }
+  }
+
+  // 挂载 / focus 切换时加载
+  useEffect(() => {
+    current.current = focus.id;
+    if (focus.id === current.current) {
+      void load();
+    }
+    // 依 focus.id 重新加载
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus.id, focus.completionReward, focus.available, focus.bypass, focus.selectEffect, focus.hiddenEffect]);
+
+  // Delete/update handlers 为只读场景走空实现（只读不可编辑）
+  const noopUpdate = useCallback(() => {}, []);
+  const noopDelete = useCallback(() => {}, []);
+  const noopAdd = useCallback(() => {}, []);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      <div style={{ fontSize: 10, color: "#888", padding: "6px 10px", background: "#1a2a1a", borderBottom: "1px solid #2a3a2a", flexShrink: 0 }}>
+        🏗️ 国策结构（只读） — 基于 entries.json 知识库 + 引擎语法解析
+      </div>
+
+      {loading ? (
+        <div style={{ padding: 16, fontSize: 11, color: "#707070" }}>解析国策脚本中…</div>
+      ) : (
+        <div style={{ flex: 1, overflow: "auto", padding: 12 }}>
+          {FOCUS_CONTAINERS.map((c) => {
+            const blocks = loaded[c.field] || [];
+            return (
+              <div key={c.field} style={{ marginBottom: 10 }}>
+                {/* 容器头 */}
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "6px 10px",
+                    background: `${c.color}22`,
+                    borderLeft: `3px solid ${c.color}`,
+                    borderRadius: "0 6px 6px 0",
+                    fontSize: 11,
+                    fontWeight: 600,
+                    color: c.color,
+                    marginBottom: 4,
+                  }}
+                >
+                  <span>{c.icon}</span>
+                  <span>{c.label}</span>
+                </div>
+                {/* 容器体：嵌套积木树 */}
+                {blocks.length === 0 ? (
+                  <div style={{ fontSize: 11, color: "#555", padding: "4px 0 4px 12px", fontStyle: "italic" }}>空</div>
+                ) : (
+                  <div style={{ paddingLeft: 4 }}>
+                    {blocks.map((b) => (
+                      <VisualBlock
+                        key={b.id}
+                        block={b}
+                        onUpdate={noopUpdate}
+                        onDelete={noopDelete}
+                        onAddSlotChild={noopAdd}
+                        depth={0}
+                        locked
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

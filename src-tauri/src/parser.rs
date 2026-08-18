@@ -59,6 +59,9 @@ pub struct KeyValue {
     pub value: Hoi4Value,
     pub is_block: bool,
     pub trailing_comment: Option<String>,
+    /// 比较运算符 (trigger 语法 key > value), "=" 时为 None
+    #[serde(default)]
+    pub operator: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +86,8 @@ pub enum Token {
     CloseBrace,
     OpenBracket,
     CloseBracket,
+    /// 比较运算符: ">", "<", ">=", "<=" (trigger 语法 key > value)
+    Operator(String),
     Comment(String),
     Eof,
 }
@@ -164,7 +169,8 @@ impl Lexer {
     fn read_ident(&mut self) -> String {
         let mut result = String::new();
         while let Some(ch) = self.peek() {
-            if ch.is_alphanumeric() || ch == '_' || ch == '-' || ch == '.' {
+            // ':' 是作用域引用分隔符 (mio:xxx, var:xxx, prev:prev), 属于标识符的一部分
+            if ch.is_alphanumeric() || ch == '_' || ch == '-' || ch == '.' || ch == ':' {
                 result.push(ch);
                 self.advance();
             } else { break; }
@@ -204,6 +210,15 @@ impl Lexer {
             '=' => Token::Equals,
             '[' => Token::OpenBracket,
             ']' => Token::CloseBracket,
+            '>' | '<' => {
+                // 比较运算符, 支持 ">=" / "<=" 组合
+                let mut op = String::from(ch);
+                if self.peek() == Some('=') {
+                    op.push('=');
+                    self.advance();
+                }
+                Token::Operator(op)
+            }
             '#' => {
                 let mut comment = String::new();
                 while let Some(c) = self.peek() {
@@ -220,6 +235,15 @@ impl Lexer {
                     Token::Number(self.read_number())
                 } else {
                     let ident = self.read_ident();
+                    if ident.is_empty() {
+                        // 未识别的字符: 跳过而非死循环 (游标已回退, 必须前进)
+                        self.advance();
+                        eprintln!(
+                            "[lexer] warning: skipping unrecognized character {:?} at line {}",
+                            ch, self.line
+                        );
+                        return self.next_token();
+                    }
                     match ident.to_lowercase().as_str() {
                         "yes" | "true" => Token::Ident("yes".into()),
                         "no" | "false" => Token::Ident("no".into()),
@@ -330,6 +354,8 @@ impl Parser {
             let key_tok = self.advance().ok_or(ParseError::UnexpectedEof)?;
             let key = match key_tok {
                 Token::Ident(s) | Token::String(s) => s,
+                // 数字亦可作 key: 数组风格块 { 6321 3295 } 与数字作用域引用 85 = { ... }
+                Token::Number(s) => s,
                 Token::Comment(_) => continue,
                 t => return Err(ParseError::InvalidToken(format!("Expected key, got {:?}", t))),
             };
@@ -338,6 +364,32 @@ impl Parser {
                 self.advance();
                 false
             } else { matches!(self.peek(), Some(Token::OpenBrace)) };
+
+            // 比较运算符: key > value (trigger 语法)
+            let operator = match self.peek() {
+                Some(Token::Operator(op)) => {
+                    let op = op.clone();
+                    self.advance();
+                    Some(op)
+                }
+                _ => None,
+            };
+
+            // 数组风格块 { A } / { A B }: 裸值后紧跟 "}", 无 key/value 结构。
+            // 此时把裸值记为 Empty 值, 由外层循环统一处理 "}" (防崩, 语义近似)。
+            if operator.is_none()
+                && !is_block
+                && matches!(self.peek(), Some(Token::CloseBrace))
+            {
+                children.push(KeyValue {
+                    key,
+                    value: Hoi4Value::Empty,
+                    is_block: false,
+                    trailing_comment: None,
+                    operator: None,
+                });
+                continue;
+            }
 
             let value = if matches!(self.peek(), Some(Token::OpenBrace)) && !is_block {
                 self.advance();
@@ -353,7 +405,7 @@ impl Parser {
                 self.parse_value()?
             };
 
-            children.push(KeyValue { key, value, is_block, trailing_comment: None });
+            children.push(KeyValue { key, value, is_block, trailing_comment: None, operator });
         }
         Ok(children)
     }
@@ -372,6 +424,17 @@ impl Parser {
 
     pub fn parse(&mut self) -> Result<Hoi4Ast, ParseError> {
         Ok(Hoi4Ast { children: self.parse_block()?, source: None })
+    }
+
+    /// 错误定位: 当前 token 位置及其前后上下文 (调试用)
+    pub fn error_context(&self, radius: usize) -> String {
+        let lo = self.pos.saturating_sub(radius);
+        let hi = (self.pos + radius).min(self.tokens.len());
+        let ctx: Vec<String> = self.tokens[lo..hi]
+            .iter()
+            .map(|t| format!("{t:?}"))
+            .collect();
+        format!("{} {:?}", self.pos, ctx)
     }
 }
 
@@ -397,8 +460,9 @@ pub fn serialize_ast(ast: &Hoi4Ast) -> String {
                 if children.is_empty() { return "{}".into(); }
                 let inner: Vec<String> = children.iter().map(|kv| {
                     let vs = ser_val(&kv.value, indent + 1);
-                    if kv.is_block { format!("{}\n{} = {}", sp, kv.key, vs) }
-                    else { format!("{}{} = {}", sp, kv.key, vs) }
+                    let op = kv.operator.as_deref().unwrap_or("=");
+                    if kv.is_block { format!("{}\n{}", sp, kv.key) }
+                    else { format!("{}{} {} {}", sp, kv.key, op, vs) }
                 }).collect();
                 format!("{{\n{}\n{}}}", inner.join("\n"), sp)
             }
@@ -410,7 +474,9 @@ pub fn serialize_ast(ast: &Hoi4Ast) -> String {
     }
     ast.children.iter().map(|kv| {
         let vs = ser_val(&kv.value, 0);
-        if kv.is_block { format!("{}\n{}", kv.key, vs) } else { format!("{} = {}", kv.key, vs) }
+        let op = kv.operator.as_deref().unwrap_or("=");
+        if kv.is_block { format!("{}\n{}", kv.key, vs) }
+        else { format!("{} {} {}", kv.key, op, vs) }
     }).collect::<Vec<_>>().join("\n\n")
 }
 

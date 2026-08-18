@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { FocusBlockEditor } from "./BlockEditor";
+import { FocusReadOnlyEditor } from "./BlockEditor";
 import type { FocusNode } from "@/data/types";
 import { PREREQ_HL_COLORS } from "./treeConstants";
 import type { PickMode } from "./FocusTreeEditor";
@@ -1849,12 +1849,9 @@ export function FocusPropertyPanel({
 
 
 
-      {/* Blocks Tab — Inline block editor */}
+      {/* Blocks Tab — 基于 dump + Rust AST 的嵌套只读积木渲染 */}
       {activeTab === "blocks" && focus && (
-        (() => {
-          console.log("[PropertyPanel] Rendering blocks tab for:", focus.id, "blocks=", !!focus.blocks, "cr=", (focus.completionReward || "").slice(0, 30));
-          return <FocusBlockEditor focus={focus} onUpdate={onUpdate} />;
-        })()
+        <FocusReadOnlyEditor focus={focus} />
       )}
     </div>
   );
