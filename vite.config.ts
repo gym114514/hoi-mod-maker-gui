@@ -12,6 +12,7 @@ export default defineConfig(async () => ({
     },
   },
   build: {
+    sourcemap: true, // 生产构建也保留 sourcemap，方便 F12 调试
     rollupOptions: {
       input: {
         main: path.resolve(__dirname, "index.html"),
