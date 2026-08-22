@@ -1353,194 +1353,27 @@ struct IdentTok {
     path: Vec<String>,
 }
 
-fn is_ident_start(c: char) -> bool {
-    c.is_ascii_alphabetic() || c == '_'
-}
-fn is_ident_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == ':' || c == '-'
-}
-
-/// 单遍扫描文本，为每个处于 key 位置的标识符生成 (文本, 块路径)。
-/// 规则：
-///   - 字符串/注释内容被跳过；
-///   - 前一个有效字符是 `{` / `[` / 行首 → 标识符视为 key 位置；
-///   - key 紧跟 `{` 或 `= {` → 是块名（压栈，不产出）；否则是叶子参数 key（产出，带当前栈）。
-/// 列坐标按 UTF-16 code unit 计数，与 Monaco 语义 token 的列一致。
-/// `stop_line`：若给 Some(L)，则推进到超过 L 行即提前停止（悬停只需光标所在行之前的信息，
-/// 避免对大文件做全文扫描）。语义 token 传 None 扫全量。
+/// 采集 content 中所有处于 key 位置的标识符（文本 + 块路径栈 + Monaco 列）。
+/// 由 parser::collect_ident_keys 复用真实词法器/语法完成，宽容模式——单行可多个
+/// key = value（旧字符扫描器的 `prev` 启发式在这种情况会误判为值而跳过），残缺代码
+/// 也尽力产出。仅按 `stop_line` 过滤返回（parser 需整体解析才能确定块栈，无法物理早停；
+/// 悬停本就在 spawn_blocking 中，额外开销被包住）。
 fn scan_idents_with_paths(content: &str, stop_line: Option<usize>) -> Vec<IdentTok> {
-    let chars: Vec<char> = content.chars().collect();
-    let mut out: Vec<IdentTok> = Vec::new();
-    let mut stack: Vec<String> = Vec::new();
-    let mut line = 1usize;
-    let mut col = 0usize; // UTF-16 列
-    let mut i = 0usize;
-    let mut in_string = false;
-    let mut escaped = false;
-    let mut prev: char = '\n'; // 行首视为语句起点
-    // key 位置标识符后，若判定为块名，先记录待压栈名，等 `{` 出现时压入
-    let mut pending_block: Option<String> = None;
-
-    while i < chars.len() {
-        let c = chars[i];
-        let cw = c.len_utf16() as usize;
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if c == '\\' {
-                escaped = true;
-            } else if c == '"' {
-                in_string = false;
-            }
-            if c == '\n' {
-                line += 1;
-                col = 0;
-                prev = '\n';
-                if stop_line.is_some_and(|sl| line > sl) {
-                    break;
-                }
-            } else {
-                col += cw;
-            }
-            i += 1;
-            continue;
-        }
-        match c {
-            '#' => {
-                while i < chars.len() && chars[i] != '\n' {
-                    i += 1;
-                }
-            }
-            '"' => {
-                in_string = true;
-                prev = '"';
-                col += cw;
-                i += 1;
-            }
-            '\n' => {
-                line += 1;
-                col = 0;
-                prev = '\n';
-                i += 1;
-                if stop_line.is_some_and(|sl| line > sl) {
-                    break;
-                }
-            }
-            c if c.is_whitespace() => {
-                col += cw;
-                i += 1;
-            }
-            '{' => {
-                // 若有待压栈块名则压入，否则压匿名空名（占位，遇到 } 弹出）
-                stack.push(pending_block.take().unwrap_or_default());
-                prev = '{';
-                col += cw;
-                i += 1;
-            }
-            '}' => {
-                pending_block = None;
-                stack.pop();
-                prev = '}';
-                col += cw;
-                i += 1;
-            }
-            '[' => {
-                pending_block = None;
-                prev = '[';
-                col += cw;
-                i += 1;
-            }
-            ']' => {
-                prev = ']';
-                col += cw;
-                i += 1;
-            }
-            // '=' 不清 pending：块名探测（key = {）就是让 pending 存到 '{' 前的 '=' 之后。
-            // 而 '<' '>' 是比较运算符，其后不会是块，需清 pending（防御式）。
-            '=' => {
-                prev = '=';
-                col += cw;
-                i += 1;
-            }
-            '<' | '>' => {
-                pending_block = None;
-                prev = '=';
-                col += cw;
-                i += 1;
-            }
-            ',' => {
-                pending_block = None;
-                prev = ',';
-                col += cw;
-                i += 1;
-            }
-            c if is_ident_start(c) => {
-                let start_line = line;
-                let start_col = col;
-                let mut j = i;
-                while j < chars.len() && is_ident_char(chars[j]) {
-                    col += chars[j].len_utf16() as usize;
-                    j += 1;
-                }
-                let text: String = chars[i..j].iter().collect();
-                let len = col - start_col;
-                let key_pos = matches!(prev, '{' | '[' | '\n');
-                if key_pos {
-                    // 探测是否块名：key 紧跟 `{` 或 `= {`
-                    let mut k = j;
-                    while k < chars.len() && chars[k].is_whitespace() && chars[k] != '\n' {
-                        k += 1;
-                    }
-                    let block_open = match chars.get(k).copied() {
-                        Some('{') => true,
-                        Some('=') => {
-                            let mut k2 = k + 1;
-                            while k2 < chars.len() && chars[k2].is_whitespace() && chars[k2] != '\n'
-                            {
-                                k2 += 1;
-                            }
-                            chars.get(k2).copied() == Some('{')
-                        }
-                        _ => false,
-                    };
-                    if block_open {
-                        // 块名同时可能是父块的“块型参数”（如 prioritize = { }）：先产出
-                        // 上一个密钥（path=压栈前栈），再由 '{' 压栈。
-                        // 这样 prioritized/limit 等块型参数可被 find_param_in_path 命中，
-                        // 同时其内部更深层嵌套仍能借助块名栈继续匹配。
-                        out.push(IdentTok {
-                            line: start_line,
-                            start_char: start_col,
-                            length: len,
-                            text: text.clone(),
-                            path: stack.clone(),
-                        });
-                        pending_block = Some(text);
-                    } else {
-                        out.push(IdentTok {
-                            line: start_line,
-                            start_char: start_col,
-                            length: len,
-                            text,
-                            path: stack.clone(),
-                        });
-                    }
-                    prev = '=';
-                } else {
-                    // 值位置的标识符：不作为参数
-                    prev = 'v';
-                }
-                i = j;
-            }
-            _ => {
-                pending_block = None;
-                prev = c;
-                col += cw;
-                i += 1;
-            }
-        }
-    }
-    out
+    let out = parser::collect_ident_keys(content); // 永不失败
+    let mut v: Vec<IdentTok> = out
+        .keys
+        .into_iter()
+        .filter(|k| stop_line.map_or(true, |sl| k.line <= sl))
+        .map(|k| IdentTok {
+            line: k.line,
+            start_char: k.start_char,
+            length: k.length,
+            text: k.text,
+            path: k.path,
+        })
+        .collect();
+    v.sort_by(|a, b| (a.line, a.start_char).cmp(&(b.line, b.start_char)));
+    v
 }
 
 /// 预计算的参数索引：父条目名 → (参数key → 参数)。O(1) 查表。
@@ -2067,5 +1900,78 @@ mod kb_tests {
         let hover = compute_hover(content, 3, 5, "prioritize")
             .expect("prioritize 应命中参数悬停");
         assert!(hover.contains("random_owned_controlled_state/prioritize"), "实际: {}", hover);
+    }
+
+    /// 回归（本 bug）：一行内多个 `key = value`，第二个及以后的 key 不得被误判为值而跳过。
+    #[test]
+    fn single_line_multi_key_values() {
+        let content = "add_political_power = 50 add_stability = 0.1";
+        let idents = scan_idents_with_paths(content, None);
+        let texts: Vec<&str> = idents.iter().map(|i| i.text.as_str()).collect();
+        assert!(
+            texts.contains(&"add_political_power") && texts.contains(&"add_stability"),
+            "同一行的两个 key 都应采集，实际 {:?}",
+            texts
+        );
+        // add_stability 是顶层叶子 key：path 为空，行 1，0-based 起始列正确。
+        // "add_political_power = 50 add_stability = 0.1" —— add_stability 起始列 = 25
+        let stab = idents.iter().find(|i| i.text == "add_stability").unwrap();
+        assert_eq!(stab.line, 1);
+        assert_eq!(stab.start_char, 25, "add_stability 应在第 1 行 0-based 列 25");
+        assert!(stab.path.is_empty(), "顶层 key 路径应为空，实际 {:?}", stab.path);
+    }
+
+    /// 回归：触发条件可在一行内联多个（`{ building = X size > 0 }`），size 不得被跳过。
+    #[test]
+    fn single_line_inline_trigger() {
+        let content = "free_building_slots = { building = industrial_complex size > 0 }";
+        let idents = scan_idents_with_paths(content, None);
+        let texts: Vec<&str> = idents.iter().map(|i| i.text.as_str()).collect();
+        assert!(
+            texts.contains(&"building") && texts.contains(&"size"),
+            "同一行内联块的 building/size 都应采集，实际 {:?}",
+            texts
+        );
+        let size = idents.iter().find(|i| i.text == "size").unwrap();
+        assert_eq!(size.path, vec!["free_building_slots".to_string()],
+            "size 块路径应为 free_building_slots，实际 {:?}", size.path);
+        // value industrial_complex 不得被当作 key
+        assert!(!texts.contains(&"industrial_complex"), "值不应被采集: {:?}", texts);
+    }
+
+    /// 数字 key（块权重/州ID）不产出，但行内 alpha key（a/b）应产出，且带命名父块路径。
+    #[test]
+    fn single_line_numeric_keys_not_emitted() {
+        let content = "random_list = { 50 = { a = 1 } 60 = { b = 2 } }";
+        let idents = scan_idents_with_paths(content, None);
+        let texts: Vec<&str> = idents.iter().map(|i| i.text.as_str()).collect();
+        assert!(!texts.contains(&"50") && !texts.contains(&"60"),
+            "数字 key 不应产出，实际 {:?}", texts);
+        assert!(texts.contains(&"a") && texts.contains(&"b"),
+            "块内的行内 alpha key a/b 应产出，实际 {:?}", texts);
+        let a = idents.iter().find(|i| i.text == "a").unwrap();
+        assert_eq!(a.path, vec!["random_list".to_string()], "a 的路径应为 random_list");
+    }
+
+    /// 宽容：残缺代码（未闭合括号/坏语句）不得 panic，仍尽力产出已可解析部分的 key。
+    #[test]
+    fn lenient_on_malformed_input() {
+        // 顶层未闭合 `{`：仍是可解析的 key 前置段
+        let c1 = "focus = {\n  available = {\n    has_war = yes\n";
+        let k1 = crate::parser::collect_ident_keys(c1).keys;
+        let t1: Vec<&str> = k1.iter().map(|k| k.text.as_str()).collect();
+        assert!(t1.contains(&"focus") && t1.contains(&"available") && t1.contains(&"has_war"),
+            "未闭合括号仍应产出关键 key，实际 {:?}", t1);
+
+        // 坏语句（无法识别语句头，如语句位置出现 `]`）后，恢复并继续产出后续兄弟块
+        let c2 = "good = 1\n]\nnext = 2\n";
+        let k2 = crate::parser::collect_ident_keys(c2).keys;
+        let t2: Vec<&str> = k2.iter().map(|k| k.text.as_str()).collect();
+        assert!(t2.contains(&"good") && t2.contains(&"next"),
+            "坏语句后应恢复并继续产出后续 key，实际 {:?}", t2);
+
+        // 完全空 / 空白输入不 panic
+        assert!(crate::parser::collect_ident_keys("").keys.is_empty());
+        assert!(crate::parser::collect_ident_keys("   \n  \n").keys.is_empty());
     }
 }
