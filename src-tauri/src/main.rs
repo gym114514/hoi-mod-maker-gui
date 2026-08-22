@@ -1366,7 +1366,9 @@ fn is_ident_char(c: char) -> bool {
 ///   - 前一个有效字符是 `{` / `[` / 行首 → 标识符视为 key 位置；
 ///   - key 紧跟 `{` 或 `= {` → 是块名（压栈，不产出）；否则是叶子参数 key（产出，带当前栈）。
 /// 列坐标按 UTF-16 code unit 计数，与 Monaco 语义 token 的列一致。
-fn scan_idents_with_paths(content: &str) -> Vec<IdentTok> {
+/// `stop_line`：若给 Some(L)，则推进到超过 L 行即提前停止（悬停只需光标所在行之前的信息，
+/// 避免对大文件做全文扫描）。语义 token 传 None 扫全量。
+fn scan_idents_with_paths(content: &str, stop_line: Option<usize>) -> Vec<IdentTok> {
     let chars: Vec<char> = content.chars().collect();
     let mut out: Vec<IdentTok> = Vec::new();
     let mut stack: Vec<String> = Vec::new();
@@ -1394,6 +1396,9 @@ fn scan_idents_with_paths(content: &str) -> Vec<IdentTok> {
                 line += 1;
                 col = 0;
                 prev = '\n';
+                if stop_line.is_some_and(|sl| line > sl) {
+                    break;
+                }
             } else {
                 col += cw;
             }
@@ -1417,6 +1422,9 @@ fn scan_idents_with_paths(content: &str) -> Vec<IdentTok> {
                 col = 0;
                 prev = '\n';
                 i += 1;
+                if stop_line.is_some_and(|sl| line > sl) {
+                    break;
+                }
             }
             c if c.is_whitespace() => {
                 col += cw;
@@ -1496,6 +1504,17 @@ fn scan_idents_with_paths(content: &str) -> Vec<IdentTok> {
                         _ => false,
                     };
                     if block_open {
+                        // 块名同时可能是父块的“块型参数”（如 prioritize = { }）：先产出
+                        // 上一个密钥（path=压栈前栈），再由 '{' 压栈。
+                        // 这样 prioritized/limit 等块型参数可被 find_param_in_path 命中，
+                        // 同时其内部更深层嵌套仍能借助块名栈继续匹配。
+                        out.push(IdentTok {
+                            line: start_line,
+                            start_char: start_col,
+                            length: len,
+                            text: text.clone(),
+                            path: stack.clone(),
+                        });
                         pending_block = Some(text);
                     } else {
                         out.push(IdentTok {
@@ -1524,17 +1543,37 @@ fn scan_idents_with_paths(content: &str) -> Vec<IdentTok> {
     out
 }
 
+/// 预计算的参数索引：父条目名 → (参数key → 参数)。O(1) 查表。
+/// 语义 token / 参数匹配对每个 key ident 都要查，必须避开 lookup_entry 的大小写兜底
+/// （其对每个未命中做全表线性扫描 = O(n²)），否则大文件上性能退化。
+fn param_index() -> &'static HashMap<String, HashMap<String, &'static EntryParam>> {
+    static IDX: OnceLock<HashMap<String, HashMap<String, &'static EntryParam>>> = OnceLock::new();
+    IDX.get_or_init(|| {
+        let mut m: HashMap<String, HashMap<String, &'static EntryParam>> = HashMap::new();
+        for table in [&knowledge_base().effect, &knowledge_base().trigger, &knowledge_base().variable] {
+            for (name, e) in table.iter() {
+                if e.params.is_empty() {
+                    continue;
+                }
+                let inner = m.entry(name.clone()).or_default();
+                for p in &e.params {
+                    inner.insert(p.key.clone(), p);
+                }
+            }
+        }
+        m
+    })
+}
+
 /// 在块路径中从内向外查找“最近的、其 params 含 key 的条目”。
 /// 返回 (匹配到的参数, 父块在 path 中的下标)，避免第二个返回项的生命周期纠缠。
-fn find_param_in_path<'a>(
-    kb: &'a KnowledgeBase,
-    path: &[String],
-    key: &str,
-) -> Option<(usize, &'a EntryParam)> {
-    for (idx, parent) in path.iter().enumerate().rev() {
-        if let Some((entry, _kind)) = lookup_entry(kb, parent) {
-            if let Some(p) = entry.params.iter().find(|p| p.key == key) {
-                return Some((idx, p));
+/// 用预计算索引 O(path 层数) 查表，不再逐层 lookup_entry（免去线性兜底扫描）。
+fn find_param_in_path(path: &[String], key: &str) -> Option<(usize, &'static EntryParam)> {
+    let idx = param_index();
+    for (pos, parent) in path.iter().enumerate().rev() {
+        if let Some(inner) = idx.get(parent) {
+            if let Some(p) = inner.get(key) {
+                return Some((pos, p));
             }
         }
     }
@@ -1558,16 +1597,17 @@ fn render_param_line(p: &EntryParam) -> String {
     s
 }
 
-#[tauri::command]
-fn get_hover_info(content: String, line: usize, column: usize, word: String) -> Result<Option<String>, AppError> {
+/// 纯同步的悬停计算（供命令在后台线程运行，避免大文件全量扫描卡死主线程）。
+fn compute_hover(content: &str, line: usize, column: usize, word: &str) -> Option<String> {
     let kb = knowledge_base();
     // 1) 上下文优先：若该词是某个外层命名块的参数，返回参数悬停（带 provenance 徽章）
-    let idents = scan_idents_with_paths(&content);
+    //    只扫描到光标所在行，避免大文件悬停时全文扫描。
+    let idents = scan_idents_with_paths(content, Some(line));
     let col0 = column.saturating_sub(1); // Monaco 1-based → 0-based
     if let Some(ident) = idents.iter().find(|t| {
         t.line == line && t.text == word && col0 >= t.start_char && col0 <= t.start_char + t.length
     }) {
-        if let Some((idx, p)) = find_param_in_path(kb, &ident.path, &word) {
+        if let Some((idx, p)) = find_param_in_path(&ident.path, word) {
             let parent = &ident.path[idx];
             let typ = if p.r#type.is_empty() { "?" } else { &p.r#type };
             let req = if p.required { "必填" } else { "可选" };
@@ -1577,15 +1617,14 @@ fn get_hover_info(content: String, line: usize, column: usize, word: String) -> 
                 format!(" · 默认 `{}`", p.default)
             };
             // 标题即路径 `父块名/key`，并强制标注 LLM 猜测（DATA_INTERFACE.md 义务）
-            let out = format!(
+            return Some(format!(
                 "**`{parent}/{word}`** : {typ} · {req}{dflt}\n\n{}\n\n> ⚠️ LLM 猜测, 非官方文档",
                 p.desc
-            );
-            return Ok(Some(out));
+            ));
         }
     }
     // 2) 回落到条目悬停（effect/trigger/variable）或结构字段
-    if let Some((entry, kind)) = lookup_entry(kb, &word) {
+    if let Some((entry, kind)) = lookup_entry(kb, word) {
         let scopes = scopes_suffix(&entry.scopes);
         let desc = match &entry.markdown {
             // 新格式：markdown 为主显示文本
@@ -1600,12 +1639,20 @@ fn get_hover_info(content: String, line: usize, column: usize, word: String) -> 
                 out.push_str(&render_param_line(p));
             }
         }
-        return Ok(Some(out));
+        return Some(out);
     }
-    if let Some(doc) = struct_docs().get(word.as_str()) {
-        return Ok(Some((*doc).to_string()));
+    if let Some(doc) = struct_docs().get(word) {
+        return Some((*doc).to_string());
     }
-    Ok(None)
+    None
+}
+
+/// 悬停命令：CPU 重的全文扫描放到 spawn_blocking 后台线程，避免阻塞 GUI 主线程。
+#[tauri::command]
+async fn get_hover_info(content: String, line: usize, column: usize, word: String) -> Result<Option<String>, AppError> {
+    tauri::async_runtime::spawn_blocking(move || compute_hover(&content, line, column, &word))
+        .await
+        .map_err(|e| AppError::Parse(e.to_string()))
 }
 
 /// 语义 token：前端据此给命中知识的参数着色（单一“param”类，type_index 恒 0）。
@@ -1626,12 +1673,10 @@ struct SemanticToken {
 /// 计算全文语义 token：识别“处于某 effect/trigger 块内、且是其主要参数的 key”并标记为 param。
 /// 只发射 param 类；条目名/结构字段的染色继续由 Monarch 负责，避免重复覆盖。
 /// 返回按 (line, start_char) 升序排序的列表，便于前端扁平增量编码。
-#[tauri::command]
-fn get_semantic_tokens(content: String) -> Result<Vec<SemanticToken>, AppError> {
-    let kb = knowledge_base();
+fn compute_semantic_tokens(content: &str) -> Vec<SemanticToken> {
     let mut toks = Vec::new();
-    for id in scan_idents_with_paths(&content) {
-        if find_param_in_path(kb, &id.path, &id.text).is_some() {
+    for id in scan_idents_with_paths(content, None) {
+        if find_param_in_path(&id.path, &id.text).is_some() {
             toks.push(SemanticToken {
                 line: id.line - 1, // 0-based
                 start_char: id.start_char,
@@ -1642,7 +1687,16 @@ fn get_semantic_tokens(content: String) -> Result<Vec<SemanticToken>, AppError> 
         }
     }
     toks.sort_by(|a, b| (a.line, a.start_char).cmp(&(b.line, b.start_char)));
-    Ok(toks)
+    toks
+}
+
+/// 语义 token 命令：全文扫描较重（大文件可达秒级），放到 spawn_blocking 后台线程，
+/// 避免阻塞 GUI 主线程导致加载卡死。
+#[tauri::command]
+async fn get_semantic_tokens(content: String) -> Result<Vec<SemanticToken>, AppError> {
+    tauri::async_runtime::spawn_blocking(move || compute_semantic_tokens(&content))
+        .await
+        .map_err(|e| AppError::Parse(e.to_string()))
 }
 
 #[tauri::command]
@@ -1921,9 +1975,8 @@ mod kb_tests {
         assert!(!entry.params.is_empty(), "应含 LLM 猜测参数");
 
         // 悬停在条目名上时，回落到条目 hover（含参数列表 + provenance 徽章）
-        let content = "can_construct_building = land_facility\n".to_string();
-        let hover = get_hover_info(content, 1, 1, "can_construct_building".to_string())
-            .expect("hover 不应失败")
+        let content = "can_construct_building = land_facility\n";
+        let hover = compute_hover(content, 1, 1, "can_construct_building")
             .expect("can_construct_building 应有 hover");
         assert!(hover.contains("LLM 猜测, 非官方文档"), "必须标注 provenance");
         assert!(hover.contains("land_facility"), "应列出参数名");
@@ -1943,8 +1996,7 @@ mod kb_tests {
     fn param_hover_by_path() {
         let content = "focus = {\n    available = {\n        free_building_slots = {\n            building = industrial_complex\n            size > 5\n        }\n    }\n}\n";
         // size 在第 5 行（1-based），列 13（1-based，size 起始）—— 用 Monaco 列约定
-        let hover = get_hover_info(content.to_string(), 5, 13, "size".to_string())
-            .expect("hover 不应失败")
+        let hover = compute_hover(content, 5, 13, "size")
             .expect("size 应命中参数悬停");
         assert!(
             hover.contains("free_building_slots/size"),
@@ -1959,7 +2011,7 @@ mod kb_tests {
     #[test]
     fn semantic_tokens_param() {
         let content = "free_building_slots = {\n    building = industrial_complex\n    size > 5\n}\n";
-        let toks = get_semantic_tokens(content.to_string()).expect("语义 token 不应失败");
+        let toks = compute_semantic_tokens(content);
         // 应标记 building(2行) 与 size(3行)，列按 0-based
         let keys: Vec<(usize, usize)> = toks.iter().map(|t| (t.line, t.start_char)).collect();
         assert!(
@@ -1984,7 +2036,7 @@ mod kb_tests {
     #[test]
     fn scan_path_detects_nesting() {
         let content = "focus = {\n  available = {\n    free_building_slots = {\n      size > 5\n    }\n  }\n}\n";
-        let idents = scan_idents_with_paths(content);
+        let idents = scan_idents_with_paths(content, None);
         let size = idents
             .iter()
             .find(|i| i.text == "size")
@@ -1996,5 +2048,24 @@ mod kb_tests {
         );
         // size 是叶子 key，不包含自己
         assert!(!size.path.iter().any(|p| p == "size"));
+    }
+
+    /// 回归：块类型参数（如 random_owned_controlled_state/prioritize、/limit）应同样
+    /// 被识别为“父块的参数”——既染色又悬停，不能因后续跟 `{` 被当成纯块名而跳过。
+    #[test]
+    fn block_type_param_is_matched() {
+        // prioritize / limit 都是 block 型参数：后面跟 `{`
+        let content =
+            "random_owned_controlled_state = {\n    limit = { size < 10 }\n    prioritize = { 65 = 1 }\n}\n";
+        let toks = compute_semantic_tokens(content);
+        let keys: Vec<String> = toks.iter().map(|t| format!("{}:{}", t.line, t.start_char)).collect();
+        // limit 在行2（0-based 1）列 5（0-based 4）；prioritize 在行3（0-based 2）列5
+        assert!(keys.contains(&"1:4".to_string()), "limit 应染色，实际 {:?}", keys);
+        assert!(keys.contains(&"2:4".to_string()), "prioritize 应染色，实际 {:?}", keys);
+
+        // 悬停 prioritize 应返回路径 free…state/prioritize
+        let hover = compute_hover(content, 3, 5, "prioritize")
+            .expect("prioritize 应命中参数悬停");
+        assert!(hover.contains("random_owned_controlled_state/prioritize"), "实际: {}", hover);
     }
 }
