@@ -43,14 +43,29 @@ export interface EntryParamGuess {
   hints?: string[];
 }
 
+/** LLM 猜测参数（DATA_INTERFACE.md §2），每条带 source 防误导标注 */
+export interface EntryParam {
+  key?: string;
+  type?: string;
+  desc?: string;
+  required?: boolean;
+  default?: string;
+  source?: string;
+}
+
 export interface Entry {
   kind?: string;
   name?: string;
   scopes?: string[];
   desc_zh?: string;
+  /** 新格式主显示文本（中文 markdown，含 clike 围栏） */
+  markdown?: string;
   md?: boolean;
   var_scope?: string;
+  /** 旧正则挖参（deprecated，仅调试/对比用） */
   params_guess?: EntryParamGuess[];
+  /** 新 LLM 猜测参数（params_llm_clean.jsonl，带 source 标注） */
+  params?: EntryParam[];
 }
 
 interface EntriesIndex {
@@ -138,6 +153,34 @@ export function lookupEntry(key: string): { entry: Entry; kind: EntryKind } | nu
 }
 
 // ============================================================
+// markdown → 纯文本（原生 title tooltip 用，避免显示 md 源码围栏）
+// ============================================================
+
+/**
+ * 从知识库 markdown（含 ### 标题 / ```clike 代码围栏 / ** 粗体）提取首段纯文本，
+ * 作为只读积木的原生 title tooltip。
+ */
+export function markdownToPlain(md: string | undefined): string {
+  if (!md) return "";
+  let inCode = false;
+  for (let line of md.split("\n")) {
+    line = line.trim();
+    if (/^```/.test(line)) {
+      inCode = !inCode; // 进出代码围栏
+      continue;
+    }
+    if (inCode) continue; // 代码围栏内部不取
+    if (!line || /^#{1,6}\s/.test(line)) continue; // 跳过空行与章节标题
+    // 去掉行内 markdown 标记，取可读纯文本
+    return line
+      .replace(/\*\*(.+?)\*\*/g, "$1") // 粗体
+      .replace(/`(.+?)`/g, "$1") // 行内代码
+      .trim();
+  }
+  return "";
+}
+
+// ============================================================
 // AST → 嵌套积木树（真正"搭建积木"：递归解析，不是行级打平）
 // ============================================================
 
@@ -191,7 +234,7 @@ export function astNodeToBlock(n: KeyValue): BlockInstance {
     children,
     readOnly: true,
     kind: isRaw ? "raw" : hit!.kind,
-    descZh: hit?.entry.desc_zh,
+    descZh: markdownToPlain(hit?.entry.markdown ?? hit?.entry.desc_zh),
     // codeText：整条语句可读文本（嵌套时仅 key + 占位）
     codeText: children
       ? `${n.key} ${op} {`

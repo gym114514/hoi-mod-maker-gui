@@ -21,78 +21,103 @@ loader.config({ paths: { vs: "https://unpkg.com/monaco-editor@0.52.2/min/vs" } }
 };
 
 // ============ HOI4 Language Registration ============
+// 染色词表由后端 get_token_vocabulary 返回（知识库单一数据源，与补全/hover 对齐）。
+// 仅 buildings 不在知识库中，保留为硬编码例外。
 
-const HOI4_MONARCH: Record<string, unknown> = {
-  defaultToken: "",
-  keywords: [
-    "focus", "id", "icon", "prerequisite", "mutually_exclusive",
-    "relative_position_id", "x", "y", "cost", "available", "bypass",
-    "completion_reward", "cancel", "ai_will_do", "search_filters",
-    "select_effect", "default", "will_lead_to_war_with",
-    "continue_if_invalid", "available_if_capitulated",
-    "cancel_if_invalid", "allow_branch",
-  ],
-  effects: [
-    "add_political_power", "add_stability", "add_war_support",
-    "add_ideas", "remove_ideas", "add_country_leader_trait",
-    "army_experience", "navy_experience", "air_experience",
-    "add_manpower", "add_doctrine_cost_reduction", "create_wargoal",
-    "add_civilian_factory", "add_military_factory", "add_dockyard",
-    "add_research_slot", "add_tech_bonus",
-    "puppet", "annex_country", "set_rule", "set_politics",
-    "set_country_flag", "clr_country_flag", "custom_effect_tooltip",
-    "random_list", "random_owned_controlled_state", "every_owned_state",
-    "add_extra_state_shared_building_slots", "add_building_construction",
-    "set_state_flag", "transfer_state",
-    "declare_war_on", "white_peace", "give_guarantee",
-    "add_to_faction", "remove_from_faction",
-  ],
-  triggers: [
-    "has_government", "has_war", "has_stability", "has_war_support",
-    "is_subject", "is_in_faction", "has_country_flag", "has_tech",
-    "has_completed_focus", "tag", "original_tag", "has_full_control_of_state",
-    "num_of_factories", "num_of_military_factories", "num_of_civilian_factories",
-    "surrender_progress", "is_ai", "is_historical_focus_on",
-    "has_capitulated", "is_puppet", "free_building_slots",
-  ],
-  buildings: [
-    "industrial_complex", "arms_factory", "dockyard",
-    "infrastructure", "air_base", "naval_base", "bunker", "coastal_bunker",
-    "anti_air_building", "radar_station", "synthetic_refinery", "fuel_silo",
-    "rocket_site", "nuclear_reactor",
-  ],
-  gfx: [
-    "GFX_goal_generic_political_pressure",
-    "GFX_goal_generic_demand_territory",
-    "GFX_goal_generic_forceful_treaty",
-    "GFX_goal_generic_military_sphere",
-    "GFX_goal_generic_major_war",
-    "GFX_goal_generic_construct_civ_factory",
-    "GFX_goal_generic_construct_mil_factory",
-    "GFX_goal_generic_construction",
-    "GFX_goal_generic_production2",
-    "GFX_goal_generic_scientific_exchange",
-    "GFX_focus_generic_army",
-    "GFX_focus_generic_air",
-    "GFX_focus_generic_navy",
-  ],
-  tokenizer: {
-    root: [
-      [/#[^\n]*/, "comment"],
-      [/"[^"]*"/, "string"],
-      [/\b\d+(\.\d+)?/, "number"],
-      [/(focus)\s*(?=\{)/, "keyword"],
-      [/(=\s*)(yes|no)\b/, ["operator", "keyword"]],
-      [/\b(add_political_power|add_stability|add_war_support|add_ideas|remove_ideas|add_country_leader_trait|army_experience|navy_experience|air_experience|add_manpower|add_doctrine_cost_reduction|create_wargoal|add_civilian_factory|add_military_factory|add_dockyard|add_research_slot|add_tech_bonus|puppet|annex_country|set_rule|set_politics|set_country_flag|clr_country_flag|custom_effect_tooltip|random_list|random_owned_controlled_state|every_owned_state|add_extra_state_shared_building_slots|add_building_construction|set_state_flag|transfer_state|declare_war_on|white_peace|give_guarantee|add_to_faction|remove_from_faction)\b/, "string.key.json"],
-      [/\b(has_government|has_war|has_stability|has_war_support|is_subject|is_in_faction|has_country_flag|has_tech|has_completed_focus|original_tag|has_full_control_of_state|num_of_factories|num_of_military_factories|num_of_civilian_factories|surrender_progress|is_ai|is_historical_focus_on|has_capitulated|is_puppet|free_building_slots)\b/, "variable"],
-      [/\b(industrial_complex|arms_factory|dockyard|infrastructure|air_base|naval_base|bunker|coastal_bunker|anti_air_building|radar_station|synthetic_refinery|fuel_silo|rocket_site|nuclear_reactor)\b/, "constant"],
-      [/\b(GFX_\w+)\b/, "tag"],
-      [/[a-zA-Z_]\w*/, { cases: { "@keywords": "keyword", "@default": "" } }],
-      [/[{}()\[\]]/, "@brackets"],
-      [/[;,.]/, "delimiter"],
+// effect 用自定义主题色 #E5C07B（橙黄，vs-dark 无内置）；其余 token 全部 inherit vs-dark。
+// 挂在 loader.init() 之后定义，保证先于 <Editor> 挂载完成（与 @monaco-editor/react 共用同一 Promise）。
+loader.init().then((monaco) => {
+  monaco.editor.defineTheme("hoi4-dark", {
+    base: "vs-dark",
+    inherit: true,
+    rules: [
+      { token: "effect", foreground: "#E5C07B" },
+      // 语义 token：命中知识的 effect/trigger 参数 key（路径索引，如 free_building_slots/size）
+      { token: "param", foreground: "#4EC9B0" },
     ],
-  },
-};
+    colors: {},
+  });
+});
+
+/** 不在知识库中的建筑名（唯一硬编码染色例外） */
+const BUILDINGS = [
+  "industrial_complex", "arms_factory", "dockyard",
+  "infrastructure", "air_base", "naval_base", "bunker", "coastal_bunker",
+  "anti_air_building", "radar_station", "synthetic_refinery", "fuel_silo",
+  "rocket_site", "nuclear_reactor",
+];
+
+/** 用后端词表生成 Monarch tokenizer；传空词表 = 仅静态规则的降级版 */
+function buildHoi4Monarch(vocab: Record<string, string[]>): Record<string, unknown> {
+  const keyword = [...(vocab.class ?? []), ...(vocab.property ?? [])];
+  // cases 列表对完整标识符做精确查表（Monarch @list 语义）。不能用 \b 交替正则：
+  // Monarch 是 line.substr(pos) 切片后匹配规则，\b 在切片起点恒为真，
+  // 单字母 x/y 会匹配到任意以 x/y 结尾的词末尾。
+  // cases 键序 = 重合词优先级（与 Rust lookup_entry 的 effect→trigger→variable 一致）。
+  // 注意：@default 必须最后插入——Monarch 按键插入顺序遍历 cases，@default 编译为
+  // test:undefined（恒命中），若排在最前会吞掉所有染色（monarchCompile.js 的 compileAction）。
+  const cases: Record<string, string> = {};
+  if (vocab.effect?.length) cases["@effect"] = "effect";
+  if (vocab.trigger?.length) cases["@trigger"] = "variable";
+  if (vocab.variable?.length) cases["@variable"] = "variable.parameter";
+  if (keyword.length) cases["@keyword"] = "keyword";
+  if (BUILDINGS.length) cases["@buildings"] = "constant";
+  cases["@default"] = "";
+  return {
+    defaultToken: "",
+    keyword,
+    effect: vocab.effect ?? [],
+    trigger: vocab.trigger ?? [],
+    variable: vocab.variable ?? [],
+    buildings: BUILDINGS,
+    tokenizer: {
+      root: [
+        [/#[^\n]*/, "comment"],
+        [/"[^"]*"/, "string"],
+        [/\b\d+(\.\d+)?/, "number"],
+        [/(focus)\s*(?=\{)/, "keyword"],
+        [/(=\s*)(yes|no)\b/, ["operator", "keyword"]],
+        [/\b(GFX_\w+)\b/, "tag"],
+        [/[a-zA-Z_]\w*/, { cases }],
+        [/[{}()\[\]]/, "@brackets"],
+        [/[;,.]/, "delimiter"],
+      ],
+    },
+  };
+}
+
+// ============ Semantic Tokens（参数着色，路径索引 free_building_slots/size） ============
+
+/** 后端 get_semantic_tokens 返回的单条 token（行/列为 0-based UTF-16） */
+interface SemanticToken {
+  line: number;
+  start_char: number;
+  length: number;
+  type_index: number;
+  modifiers: number;
+}
+
+/**
+ * 把后端 token 列表编码为 Monaco SemanticTokens.data（扁平 Uint32Array）。
+ * 编码约定（每 token 5 个整数）：
+ *   [deltaLine, startChar, length, typeIndex, modifiers]
+ *   - deltaLine：相对上一个 token 的行增量（首个即绝对 0-based 行）；
+ *   - startChar：同行内为相对上一 token 起始列的增量，换行后为绝对 0-based 列。
+ * 后端已按 (line, start_char) 升序返回。
+ */
+function encodeSemanticTokens(toks: SemanticToken[]): Uint32Array {
+  const data: number[] = [];
+  let prevLine = 0;
+  let prevStart = 0;
+  for (const t of toks) {
+    const deltaLine = t.line - prevLine;
+    const startChar = deltaLine === 0 ? t.start_char - prevStart : t.start_char;
+    data.push(deltaLine, startChar, t.length, t.type_index, t.modifiers);
+    prevLine = t.line;
+    prevStart = t.start_char;
+  }
+  return Uint32Array.from(data);
+}
 
 // ============ Completion & Hover Providers（Rust LSP 查询 entries.json 知识库） ============
 
@@ -154,11 +179,17 @@ function makeCompletionProvider(monaco: Parameters<OnMount>[1]) {
 
 function makeHoverProvider() {
   return {
-    provideHover: async (model: { getWordAtPosition: (p: { lineNumber: number; column: number }) => { word: string; startColumn: number; endColumn: number } | null }, position: { lineNumber: number; column: number }) => {
+    provideHover: async (model: { getValue: () => string; getWordAtPosition: (p: { lineNumber: number; column: number }) => { word: string; startColumn: number; endColumn: number } | null }, position: { lineNumber: number; column: number }) => {
       try {
         const word = model.getWordAtPosition(position);
         if (!word) return null;
-        const info = await invoke<string | null>("get_hover_info", { word: word.word });
+        // 传全文 + 光标行列，让后端解析“当前位置所在块路径”，实现参数（路径索引）悬停
+        const info = await invoke<string | null>("get_hover_info", {
+          content: model.getValue(),
+          line: position.lineNumber,
+          column: position.column,
+          word: word.word,
+        });
         if (!info) return null;
         return {
           range: {
@@ -193,10 +224,39 @@ export function CodePanel() {
       monaco.languages.setLanguageConfiguration("hoi4", {
         wordPattern: /[a-zA-Z_][a-zA-Z0-9_]*/,
       });
-      monaco.languages.setMonarchTokensProvider("hoi4", HOI4_MONARCH as any);
       monaco.languages.registerCompletionItemProvider("hoi4", makeCompletionProvider(monaco) as any);
       monaco.languages.registerHoverProvider("hoi4", makeHoverProvider() as any);
+
+      // 参数着色（语义 token，路径索引）：只染“命中知识的参数 key”，与 Monarch 叠加（语义优先）
+      monaco.languages.registerDocumentSemanticTokensProvider(
+        "hoi4",
+        {
+          getLegend: () => ({ tokenTypes: ["param"], tokenModifiers: [] }),
+          provideDocumentSemanticTokens: async (model: { getValue: () => string }) => {
+            try {
+              const toks = await invoke<SemanticToken[]>("get_semantic_tokens", {
+                content: model.getValue(),
+              });
+              return { data: encodeSemanticTokens(toks) };
+            } catch (e) {
+              console.error("[semantic] invoke failed:", e);
+              return { data: new Uint32Array() };
+            }
+          },
+          releaseDocumentSemanticTokens: () => {},
+        } as any,
+      );
     }
+
+    // 染色词表来自后端（与补全/hover 同一数据源）；失败时降级为仅静态规则
+    invoke<Record<string, string[]>>("get_token_vocabulary")
+      .then((vocab) => {
+        monaco.languages.setMonarchTokensProvider("hoi4", buildHoi4Monarch(vocab) as any);
+      })
+      .catch((e) => {
+        console.error("[tokenizer] invoke failed:", e);
+        monaco.languages.setMonarchTokensProvider("hoi4", buildHoi4Monarch({}) as any);
+      });
 
     // Ctrl+S: validation + auto-save to tmp
     editorInstance.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, async () => {
@@ -252,7 +312,7 @@ export function CodePanel() {
       <Editor
         language={language}
         value={content}
-        theme="vs-dark"
+        theme="hoi4-dark"
         onChange={(value) => {
           if (activeFile && value !== undefined) {
             updateFileContent(activeFile.path, value);
@@ -278,6 +338,9 @@ export function CodePanel() {
           bracketPairColorization: { enabled: true },
           // 只显示 provider 返回的建议，不混入文档内已有词（便于定位 provider 问题）
           suggest: { showWords: false },
+          // 语义 token（参数着色）必须显式开启：Monaco 0.52 自定义主题的
+          // semanticHighlighting 恒为 false，只有 editor 全局选项能真正打开
+          "semanticHighlighting.enabled": true,
         }}
         loading={<div style={{ padding: 20, color: "#888" }}>加载编辑器...</div>}
       />

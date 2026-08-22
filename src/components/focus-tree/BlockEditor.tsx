@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import type { FocusNode } from "@/data/types";
-import { lookupEntry, parseCodeToBlocks } from "@/data/blockMatcher";
+import { lookupEntry, parseCodeToBlocks, markdownToPlain } from "@/data/blockMatcher";
 
 // ============ Block Definitions ============
 
@@ -720,7 +720,7 @@ function parseLineWithDump(line: string): BlockInstance | null {
     params: {},
     readOnly: true,
     kind: hit.kind,
-    descZh: hit.entry.desc_zh,
+    descZh: markdownToPlain(hit.entry.markdown ?? hit.entry.desc_zh),
     codeText: line,
   };
 }
